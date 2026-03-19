@@ -209,11 +209,24 @@ class HDPassportScanActivity : AppCompatActivity() {
     private var sharpnessEma: Double = 0.0
     private var sharpnessSamples: Int = 0
     private var blurConsecutiveCount: Int = 0
+    private var lastCoreCandidateKey: String? = null
+    private var lastCoreCandidateMrz: String? = null
+    private var coreCandidateStableCount: Int = 0
+    private var coreLine1Votes: Array<MutableMap<Char, Int>>? = null
+    private var coreLine2Votes: Array<MutableMap<Char, Int>>? = null
+    private var dynamicBarcodeProcessIntervalMs: Long = BARCODE_PROCESS_INTERVAL_MS
+    private var dynamicMrzPriorityDurationMs: Long = MRZ_PRIORITY_DURATION_MS
+    private var mrzLikelyConsecutiveCount: Int = 0
+    private var roiMissConsecutiveCount: Int = 0
     private var sessionStartedAtMs: Long = 0L
     private var analyzedFrameCount: Int = 0
     private var barcodeAttemptCount: Int = 0
-    private var mrzSuccessCount: Int = 0
+    private var blurSkipCount: Int = 0
+    private var mrzPriorityEntryCount: Int = 0
+    private var strictMrzSuccessCount: Int = 0
+    private var stabilizedMrzSuccessCount: Int = 0
     private var barcodeSuccessCount: Int = 0
+    private var lastAdaptiveFocusKickMs: Long = 0L
 
     // 바코드 스캔은 MRZ보다 가벼운 편이지만, 매 프레임 돌리면 MRZ 인식이 체감상 느려집니다.
     private var lastBarcodeScanMs: Long = 0L
@@ -269,10 +282,10 @@ class HDPassportScanActivity : AppCompatActivity() {
         initViews()
         initMlKit()
         cameraExecutor = Executors.newSingleThreadExecutor()
-        resetSessionTelemetry()
 
         setScanningUi()
         checkCameraPermissionAndStart()
+        resetScannerSessionState()
     }
 
     override fun onResume() {
@@ -321,7 +334,7 @@ class HDPassportScanActivity : AppCompatActivity() {
             cameraExecutor.shutdownNow()
         }
 
-        emitSessionTelemetry("destroy")
+        logSessionSummary("destroy")
     }
 
     private fun initViews() {
@@ -542,7 +555,7 @@ class HDPassportScanActivity : AppCompatActivity() {
             }
 
             stopCamera()
-            emitSessionTelemetry("timeout")
+            logSessionSummary("timeout")
             showScanTimeoutDialog()
         }
     }
@@ -600,31 +613,29 @@ class HDPassportScanActivity : AppCompatActivity() {
         lastProcessStartMs = 0L
         lastBarcodeScanMs = 0L
         blurConsecutiveCount = 0
+        lastCoreCandidateKey = null
+        lastCoreCandidateMrz = null
+        coreCandidateStableCount = 0
+        coreLine1Votes = null
+        coreLine2Votes = null
+        dynamicBarcodeProcessIntervalMs = BARCODE_PROCESS_INTERVAL_MS
+        dynamicMrzPriorityDurationMs = MRZ_PRIORITY_DURATION_MS
+        mrzLikelyConsecutiveCount = 0
+        roiMissConsecutiveCount = 0
+        sessionStartedAtMs = System.currentTimeMillis()
+        analyzedFrameCount = 0
+        barcodeAttemptCount = 0
+        blurSkipCount = 0
+        mrzPriorityEntryCount = 0
+        strictMrzSuccessCount = 0
+        stabilizedMrzSuccessCount = 0
+        barcodeSuccessCount = 0
+        lastAdaptiveFocusKickMs = 0L
         consecutiveMrzFails = 0
         flip180Enabled = false
         flip180Toggle = false
         mrzPriorityUntilMs = 0L
         lastSp60AutoZoomMs = 0L
-        resetSessionTelemetry()
-    }
-
-    private fun resetSessionTelemetry() {
-        sessionStartedAtMs = System.currentTimeMillis()
-        analyzedFrameCount = 0
-        barcodeAttemptCount = 0
-        mrzSuccessCount = 0
-        barcodeSuccessCount = 0
-    }
-
-    private fun emitSessionTelemetry(reason: String) {
-        if (sessionStartedAtMs <= 0L) return
-        val elapsedMs = System.currentTimeMillis() - sessionStartedAtMs
-        Log.i(
-            TAG,
-            "session telemetry: reason=$reason elapsedMs=$elapsedMs analyzedFrames=$analyzedFrameCount " +
-                "barcodeAttempts=$barcodeAttemptCount mrzSuccess=$mrzSuccessCount barcodeSuccess=$barcodeSuccessCount"
-        )
-        sessionStartedAtMs = 0L
     }
 
     private fun dismissTimeoutDialog() {
@@ -1393,16 +1404,15 @@ class HDPassportScanActivity : AppCompatActivity() {
             stopCamera()
 
             setResult(RESULT_OK, PassportScanContract.createBarcodeResultIntent(value))
-            emitSessionTelemetry("barcode_success")
+            logSessionSummary("barcode_success")
             finish()
         }
     }
 
-    private fun onMrzRecognized(passport: PassportMRZ) {
+    private fun onMrzRecognized(passport: PassportMRZ, isStrict: Boolean) {
         if (!isFinished.compareAndSet(false, true)) return
 
         runWhenUiAlive {
-            mrzSuccessCount++
             mrzOverlay.setGuideColor(COLOR_SUCCESS)
             mrzOverlay.stopScanAnimation()
             vibrateSuccess()
@@ -1410,8 +1420,8 @@ class HDPassportScanActivity : AppCompatActivity() {
             cancelScanTimeout()
             stopCamera()
 
-            setResult(RESULT_OK, PassportScanContract.createPassportResultIntent(passport))
-            emitSessionTelemetry("mrz_success")
+            setResult(RESULT_OK, PassportScanContract.createPassportResultIntent(passport, isStrict))
+            logSessionSummary(if (isStrict) "mrz_strict_success" else "mrz_core_stabilized_success")
             finish()
         }
     }
