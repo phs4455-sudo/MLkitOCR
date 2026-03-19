@@ -1651,6 +1651,89 @@ class HDPassportScanActivity : AppCompatActivity() {
         return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
     }
 
+    private fun uprightRectToRawImageRect(
+        uprightRect: RectF,
+        rawWidth: Int,
+        rawHeight: Int,
+        rotationDegrees: Int
+    ): Rect {
+        if (rawWidth <= 0 || rawHeight <= 0) return Rect()
+
+        val uprightWidth = if (rotationDegrees == 90 || rotationDegrees == 270) rawHeight.toFloat() else rawWidth.toFloat()
+        val uprightHeight = if (rotationDegrees == 90 || rotationDegrees == 270) rawWidth.toFloat() else rawHeight.toFloat()
+
+        val clamped = RectF(
+            uprightRect.left.coerceIn(0f, uprightWidth),
+            uprightRect.top.coerceIn(0f, uprightHeight),
+            uprightRect.right.coerceIn(0f, uprightWidth),
+            uprightRect.bottom.coerceIn(0f, uprightHeight)
+        )
+
+        if (clamped.width() <= 1f || clamped.height() <= 1f) return Rect()
+
+        fun mapPoint(u: Float, v: Float): Pair<Float, Float> {
+            return when ((rotationDegrees % 360 + 360) % 360) {
+                90 -> Pair(v, rawHeight - u)
+                180 -> Pair(rawWidth - u, rawHeight - v)
+                270 -> Pair(rawWidth - v, u)
+                else -> Pair(u, v)
+            }
+        }
+
+        val points = listOf(
+            mapPoint(clamped.left, clamped.top),
+            mapPoint(clamped.right, clamped.top),
+            mapPoint(clamped.left, clamped.bottom),
+            mapPoint(clamped.right, clamped.bottom)
+        )
+
+        val left = points.minOf { it.first }.toInt().coerceIn(0, rawWidth)
+        val top = points.minOf { it.second }.toInt().coerceIn(0, rawHeight)
+        val right = kotlin.math.ceil(points.maxOf { it.first }.toDouble()).toInt().coerceIn(0, rawWidth)
+        val bottom = kotlin.math.ceil(points.maxOf { it.second }.toDouble()).toInt().coerceIn(0, rawHeight)
+
+        return Rect(left, top, right, bottom)
+    }
+
+    private fun createGrayscaleBitmapFromYPlane(
+        imageProxy: ImageProxy,
+        rawRect: Rect,
+        rotationDegrees: Int
+    ): Bitmap? {
+        if (rawRect.width() <= 1 || rawRect.height() <= 1) return null
+
+        val plane = imageProxy.planes.firstOrNull() ?: return null
+        val buffer = plane.buffer.duplicate()
+        val rowStride = plane.rowStride
+        val pixelStride = plane.pixelStride
+
+        if (rowStride <= 0 || pixelStride <= 0) return null
+
+        val width = rawRect.width()
+        val height = rawRect.height()
+        val pixels = IntArray(width * height)
+
+        for (y in 0 until height) {
+            val srcY = rawRect.top + y
+            val rowBase = srcY * rowStride
+            val outRow = y * width
+            for (x in 0 until width) {
+                val srcX = rawRect.left + x
+                val luma = buffer.get(rowBase + srcX * pixelStride).toInt() and 0xFF
+                val color = -0x1000000 or (luma shl 16) or (luma shl 8) or luma
+                pixels[outRow + x] = color
+            }
+        }
+
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+
+        if (rotationDegrees == 0) return bitmap
+
+        val matrix = Matrix().apply { postRotate(rotationDegrees.toFloat()) }
+        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+    }
+
     // ------------------------------------------------------------
     // Demo hint (passport MRZ / H.Point barcode) - 이미지 기반 안내
     // ------------------------------------------------------------
