@@ -196,6 +196,7 @@ class HDPassportScanActivity : AppCompatActivity() {
 
     private val isFinished = AtomicBoolean(false)
     private val isAnalyzing = AtomicBoolean(false)
+    private val pendingMainThreadFocus = AtomicBoolean(false)
     @Volatile
     private var isUiAlive: Boolean = false
 
@@ -299,6 +300,7 @@ class HDPassportScanActivity : AppCompatActivity() {
 
     override fun onPause() {
         isUiAlive = false
+        pendingMainThreadFocus.set(false)
         super.onPause()
         cancelScanTimeout()
         stopDemoHintCarousel()
@@ -309,6 +311,7 @@ class HDPassportScanActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         isUiAlive = false
+        pendingMainThreadFocus.set(false)
         super.onDestroy()
         cancelScanTimeout()
         stopDemoHintCarousel()
@@ -593,6 +596,7 @@ class HDPassportScanActivity : AppCompatActivity() {
     private fun resetScannerSessionState() {
         isFinished.set(false)
         isAnalyzing.set(false)
+        pendingMainThreadFocus.set(false)
         lastUiFeedbackTimeMs = 0L
         lastProgressUiMs = 0L
         lastProcessStartMs = 0L
@@ -617,8 +621,11 @@ class HDPassportScanActivity : AppCompatActivity() {
 
     private fun startFocusAt(x: Float, y: Float, autoCancelSeconds: Long = 2L) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            if (this::previewView.isInitialized) {
-                previewView.post { startFocusAt(x, y, autoCancelSeconds) }
+            if (this::previewView.isInitialized && pendingMainThreadFocus.compareAndSet(false, true)) {
+                previewView.post {
+                    pendingMainThreadFocus.set(false)
+                    startFocusAt(x, y, autoCancelSeconds)
+                }
             }
             return
         }
