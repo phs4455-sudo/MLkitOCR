@@ -17,6 +17,9 @@ object PassportScanContract {
     const val EXTRA_DATE_OF_BIRTH = "dateOfBirth"
     const val EXTRA_SEX = "sex"
     const val EXTRA_EXPIRATION_DATE = "expirationDate"
+    const val EXTRA_RAW_MRZ_LINE_1 = "rawMrzLine1"
+    const val EXTRA_RAW_MRZ_LINE_2 = "rawMrzLine2"
+    const val EXTRA_MRZ_IS_STRICT = "mrzIsStrict"
 
     @JvmStatic
     fun createIntent(context: Context): Intent = Intent(context, HDPassportScanActivity::class.java)
@@ -27,7 +30,7 @@ object PassportScanContract {
     }
 
     @JvmStatic
-    fun createPassportResultIntent(passport: PassportMRZ): Intent = Intent().apply {
+    fun createPassportResultIntent(passport: PassportMRZ, isStrict: Boolean): Intent = Intent().apply {
         putExtra(EXTRA_DOCUMENT_TYPE, passport.documentType)
         putExtra(EXTRA_ISSUING_COUNTRY, passport.issuingCountry)
         putExtra(EXTRA_LAST_NAME, passport.lastName)
@@ -37,6 +40,9 @@ object PassportScanContract {
         putExtra(EXTRA_DATE_OF_BIRTH, passport.birthDate)
         putExtra(EXTRA_SEX, passport.sex)
         putExtra(EXTRA_EXPIRATION_DATE, passport.expiryDate)
+        putExtra(EXTRA_RAW_MRZ_LINE_1, passport.line1)
+        putExtra(EXTRA_RAW_MRZ_LINE_2, passport.line2)
+        putExtra(EXTRA_MRZ_IS_STRICT, isStrict)
     }
 
     @JvmStatic
@@ -55,6 +61,9 @@ object PassportScanContract {
         val sex = data.getStringExtra(EXTRA_SEX)
         val lastName = data.getStringExtra(EXTRA_LAST_NAME)
         val firstName = data.getStringExtra(EXTRA_FIRST_NAME)
+        val rawLine1 = data.getStringExtra(EXTRA_RAW_MRZ_LINE_1)
+        val rawLine2 = data.getStringExtra(EXTRA_RAW_MRZ_LINE_2)
+        val isStrict = data.getBooleanExtra(EXTRA_MRZ_IS_STRICT, false)
 
         if (passportNumber.isNullOrBlank() && nationality.isNullOrBlank() && birthDate.isNullOrBlank() && expiryDate.isNullOrBlank()) {
             return null
@@ -69,7 +78,10 @@ object PassportScanContract {
             nationality = nationality.orEmpty(),
             dateOfBirth = birthDate.orEmpty(),
             sex = sex.orEmpty(),
-            expirationDate = expiryDate.orEmpty()
+            expirationDate = expiryDate.orEmpty(),
+            rawMrzLine1 = rawLine1.orEmpty(),
+            rawMrzLine2 = rawLine2.orEmpty(),
+            isStrict = isStrict
         )
     }
 
@@ -85,7 +97,10 @@ object PassportScanContract {
             val nationality: String,
             val dateOfBirth: String,
             val sex: String,
-            val expirationDate: String
+            val expirationDate: String,
+            val rawMrzLine1: String,
+            val rawMrzLine2: String,
+            val isStrict: Boolean
         ) : ScanResult()
     }
 }

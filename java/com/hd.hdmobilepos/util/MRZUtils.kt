@@ -50,6 +50,29 @@ object MRZUtils {
         'B' to '8'
     )
 
+    private val COUNTRY_ALPHA_FIX_MAP: Map<Char, Char> = mapOf(
+        '0' to 'O',
+        '1' to 'I',
+        '2' to 'Z',
+        '5' to 'S',
+        '6' to 'G',
+        '8' to 'B'
+    )
+
+    private val ICAO_COUNTRY_CODES: Set<String> by lazy {
+        buildSet {
+            Locale.getISOCountries().forEach { alpha2 ->
+                try {
+                    add(Locale("", alpha2).isO3Country.uppercase(Locale.ROOT))
+                } catch (_: Exception) {
+                    // ignore invalid locale mapping
+                }
+            }
+            // MRZ/ICAO에서 ISO 외 특수 코드가 섞여 들어오는 경우도 최소한 허용합니다.
+            addAll(setOf("D<<", "GBD", "GBN", "GBO", "GBP", "GBS", "UNO", "UNA", "UNK"))
+        }
+    }
+
     // --- Public APIs ---
 
     /**
@@ -415,14 +438,15 @@ object MRZUtils {
             }
         }
 
-        val fixedK = fixKAsAngle(String(arr))
-        return sanitizeTrailingFiller(fixedK)
+        var fixed = fixKAsAngle(String(arr))
+        fixed = repairCountryCodeRegion(fixed, 2)
+        return sanitizeTrailingFiller(fixed)
     }
 
     private fun normalizeLine2(line: String?): String {
         if (line.isNullOrEmpty()) return ""
         val base = baseNormalize(line)
-        return fixKAsAngle(base)
+        return repairCountryCodeRegion(fixKAsAngle(base), 10)
     }
 
     private fun baseNormalize(line: String): String {
@@ -432,6 +456,37 @@ object MRZUtils {
         val upper = angled.uppercase(Locale.ROOT)
         // 허용 문자 외는 '<'
         return INVALID_CHAR_PATTERN.matcher(upper).replaceAll("<")
+    }
+
+    private fun repairCountryCodeRegion(line: String, start: Int): String {
+        if (line.length < start + 3) return line
+        val repaired = normalizeCountryCodeToken(line.substring(start, start + 3))
+        if (repaired == null) return line
+
+        val arr = line.toCharArray()
+        repaired.forEachIndexed { idx, c -> arr[start + idx] = c }
+        return String(arr)
+    }
+
+    private fun normalizeCountryCodeToken(raw: String): String? {
+        if (raw.length != 3) return null
+
+        val options = raw.map { ch ->
+            linkedSetOf(ch, COUNTRY_ALPHA_FIX_MAP[ch] ?: ch)
+        }
+
+        var fallback = String(CharArray(3) { idx -> options[idx].first() })
+        for (a in options[0]) {
+            for (b in options[1]) {
+                for (c in options[2]) {
+                    val candidate = charArrayOf(a, b, c).concatToString()
+                    if (candidate in ICAO_COUNTRY_CODES) return candidate
+                    fallback = candidate
+                }
+            }
+        }
+
+        return fallback
     }
 
     /**
@@ -519,19 +574,9 @@ object MRZUtils {
         fun alpha3LooksOk(raw: String): Boolean {
             if (raw.length != 3) return false
 
-            // 발행국/국적 코드는 원칙적으로 A-Z 3글자이지만,
-            // OCR에서 O↔0, I↔1 같은 오인식이 자주 나와서 최소 보정을 한 뒤 검사합니다.
-            fun fix(c: Char): Char = when (c) {
-                '0' -> 'O'
-                '1' -> 'I'
-                '2' -> 'Z'
-                '5' -> 'S'
-                '8' -> 'B'
-                else -> c
-            }
-
-            val s = buildString(3) { raw.forEach { append(fix(it)) } }
+            val s = normalizeCountryCodeToken(raw) ?: return false
             if (!s.all { it in 'A'..'Z' || it == '<' }) return false
+            if (s in ICAO_COUNTRY_CODES) return true
 
             // OCR에서 한 글자가 '<'로 빠지는 정도는 허용(최소 2글자는 문자)
             return s.count { it in 'A'..'Z' } >= 2
@@ -677,8 +722,14 @@ object MRZUtils {
                 '0' -> sb.setCharAt(i, 'O')
                 '1' -> sb.setCharAt(i, 'I')
                 '5' -> sb.setCharAt(i, 'S')
+                '6' -> sb.setCharAt(i, 'G')
                 '8' -> sb.setCharAt(i, 'B')
             }
+        }
+
+        val nat = normalizeCountryCodeToken(sb.substring(10, 13))
+        if (nat != null) {
+            nat.forEachIndexed { idx, c -> sb.setCharAt(10 + idx, c) }
         }
 
         // 생년월일(숫자)
