@@ -3,11 +3,11 @@ package com.hd.hdmobilepos.activity.scan
 import android.Manifest
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.ImageFormat
 import android.graphics.Matrix
-import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.RectF
 import android.hardware.camera2.CameraCharacteristics
@@ -913,8 +913,17 @@ class HDPassportScanActivity : AppCompatActivity() {
             mediaImage: android.media.Image,
             rotationForMrz: Int
         ): InputImage {
+            if (!shouldPreferGuideRoiOcr()) {
+                return InputImage.fromMediaImage(mediaImage, rotationForMrz)
+            }
+
             val roiImage = buildGuideRoiInputImage(imageProxy, rotationForMrz)
             return roiImage ?: InputImage.fromMediaImage(mediaImage, rotationForMrz)
+        }
+
+        private fun shouldPreferGuideRoiOcr(): Boolean {
+            val now = System.currentTimeMillis()
+            return now < mrzPriorityUntilMs || consecutiveMrzFails >= 2 || flip180Enabled
         }
 
         /**
