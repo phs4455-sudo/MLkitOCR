@@ -26,6 +26,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.AspectRatio
 import androidx.camera.camera2.interop.Camera2Interop
@@ -77,19 +78,6 @@ class HDPassportScanActivity : AppCompatActivity() {
     private enum class DemoHintType { MRZ, HPOINT }
 
     companion object {
-        // --- Result extras (keep keys to stay compatible with existing Java code) ---
-        const val EXTRA_BARCODE_VALUE = "barcodeValue"
-
-        const val EXTRA_DOCUMENT_TYPE = "documentType"
-        const val EXTRA_ISSUING_COUNTRY = "issuingCountry"
-        const val EXTRA_LAST_NAME = "lastName"
-        const val EXTRA_FIRST_NAME = "firstName"
-        const val EXTRA_PASSPORT_NUMBER = "passportNumber"
-        const val EXTRA_NATIONALITY = "nationality"
-        const val EXTRA_DATE_OF_BIRTH = "dateOfBirth"
-        const val EXTRA_SEX = "sex"
-        const val EXTRA_EXPIRATION_DATE = "expirationDate"
-
         private val COLOR_SCANNING = Color.WHITE
         private val COLOR_SUCCESS = Color.parseColor("#2ECC71")
         private val COLOR_ERROR = Color.parseColor("#FF3B30")
@@ -191,9 +179,12 @@ class HDPassportScanActivity : AppCompatActivity() {
     private lateinit var textRecognizer: TextRecognizer
     private lateinit var barcodeScanner: BarcodeScanner
     private lateinit var cameraExecutor: ExecutorService
+    private var timeoutDialog: AlertDialog? = null
 
     private val isFinished = AtomicBoolean(false)
     private val isAnalyzing = AtomicBoolean(false)
+    @Volatile
+    private var isUiAlive: Boolean = false
 
     private var lastUiFeedbackTimeMs: Long = 0L
     private var lastProgressUiMs: Long = 0L
@@ -262,6 +253,7 @@ class HDPassportScanActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        isUiAlive = true
         setContentView(R.layout.activity_passport_scanner)
 
         initViews()
@@ -274,6 +266,7 @@ class HDPassportScanActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        isUiAlive = true
         mrzOverlay.post {
             mrzOverlay.startScanAnimation()
             positionDemoHintAboveGuide()
@@ -293,17 +286,21 @@ class HDPassportScanActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
+        isUiAlive = false
         super.onPause()
         cancelScanTimeout()
         stopDemoHintCarousel()
+        dismissTimeoutDialog()
         mrzOverlay.stopScanAnimation()
         stopCamera()
     }
 
     override fun onDestroy() {
+        isUiAlive = false
         super.onDestroy()
         cancelScanTimeout()
         stopDemoHintCarousel()
+        dismissTimeoutDialog()
         stopCamera()
 
         try {
@@ -532,7 +529,8 @@ class HDPassportScanActivity : AppCompatActivity() {
         if (isFinished.get()) return
         if (!isFinished.compareAndSet(false, true)) return
 
-        runOnUiThread {
+        runWhenUiAlive {
+            Log.w(TAG, "scan timeout reached; stopping current session")
             try {
                 stopDemoHintCarousel()
             } catch (_: Exception) {
@@ -545,11 +543,75 @@ class HDPassportScanActivity : AppCompatActivity() {
             }
 
             stopCamera()
-
-            showToast("스캔 시간이 초과되어 종료합니다.")
-            setResult(RESULT_CANCELED)
-            finish()
+            showScanTimeoutDialog()
         }
+    }
+
+    private fun showScanTimeoutDialog() {
+        dismissTimeoutDialog()
+        timeoutDialog = AlertDialog.Builder(this)
+            .setTitle("스캔 시간 초과")
+            .setMessage("인식 시간이 초과되었습니다.\n다시 시도하거나 스캔을 종료할 수 있습니다.")
+            .setCancelable(false)
+            .setPositiveButton("다시 시도") { dialog, _ ->
+                dialog.dismiss()
+                timeoutDialog = null
+                Log.i(TAG, "scan timeout dialog: retry selected")
+                restartScannerSessionAfterTimeout()
+            }
+            .setNegativeButton("닫기") { dialog, _ ->
+                dialog.dismiss()
+                timeoutDialog = null
+                Log.i(TAG, "scan timeout dialog: close selected")
+                setResult(RESULT_CANCELED)
+                finish()
+            }
+            .show()
+    }
+
+    private fun restartScannerSessionAfterTimeout() {
+        if (!isUiAlive || isDestroyed) return
+
+        Log.i(TAG, "restarting scanner session after timeout")
+        resetScannerSessionState()
+        setScanningUi()
+        updateDemoHint(DemoHintType.MRZ, animate = false)
+        positionDemoHintAboveGuide()
+        mrzOverlay.startScanAnimation()
+        startDemoHintCarousel()
+        scheduleScanTimeout()
+
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            bindCameraUseCases()
+        } else {
+            permissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    private fun resetScannerSessionState() {
+        isFinished.set(false)
+        isAnalyzing.set(false)
+        lastUiFeedbackTimeMs = 0L
+        lastProgressUiMs = 0L
+        lastProcessStartMs = 0L
+        lastBarcodeScanMs = 0L
+        blurConsecutiveCount = 0
+        weakMrzStableCount = 0
+        lastWeakMrzKey = null
+        consecutiveMrzFails = 0
+        flip180Enabled = false
+        flip180Toggle = false
+        mrzPriorityUntilMs = 0L
+        lastSp60AutoZoomMs = 0L
+    }
+
+    private fun dismissTimeoutDialog() {
+        timeoutDialog?.dismiss()
+        timeoutDialog = null
     }
 
     private fun startFocusAt(x: Float, y: Float, autoCancelSeconds: Long = 2L) {
@@ -759,6 +821,7 @@ class HDPassportScanActivity : AppCompatActivity() {
                 val barcodeInput = InputImage.fromMediaImage(mediaImage, baseRotation)
                 barcodeScanner.process(barcodeInput)
                     .addOnSuccessListener { barcodes ->
+                        if (!shouldHandleAsyncCallback()) return@addOnSuccessListener
                         val hpoint = barcodes
                             .asSequence()
                             .mapNotNull { normalizeHpointBarcode(it.rawValue) }
@@ -799,6 +862,7 @@ class HDPassportScanActivity : AppCompatActivity() {
 
             textRecognizer.process(inputImage)
                 .addOnSuccessListener { visionText ->
+                    if (!shouldHandleAsyncCallback()) return@addOnSuccessListener
                     val outcome = onTextRecognized(visionText, imageProxy, rotationForMrz)
 
                     when (outcome) {
@@ -840,6 +904,7 @@ class HDPassportScanActivity : AppCompatActivity() {
                     handleRetry(isBlurry = isBlurry)
                 }
                 .addOnFailureListener {
+                    if (!shouldHandleAsyncCallback()) return@addOnFailureListener
                     maybeMaintainFocus(isBlurry = blurConsecutiveCount >= 2)
                     handleRetry(isBlurry = blurConsecutiveCount >= 2)
                 }
@@ -1066,7 +1131,7 @@ class HDPassportScanActivity : AppCompatActivity() {
     private fun onBarcodeRecognized(value: String) {
         if (!isFinished.compareAndSet(false, true)) return
 
-        runOnUiThread {
+        runWhenUiAlive {
             mrzOverlay.setGuideColor(COLOR_SUCCESS)
             mrzOverlay.stopScanAnimation()
             vibrateSuccess()
@@ -1074,10 +1139,7 @@ class HDPassportScanActivity : AppCompatActivity() {
             cancelScanTimeout()
             stopCamera()
 
-            val data = Intent().apply {
-                putExtra(EXTRA_BARCODE_VALUE, value)
-            }
-            setResult(RESULT_OK, data)
+            setResult(RESULT_OK, PassportScanContract.createBarcodeResultIntent(value))
             finish()
         }
     }
@@ -1085,7 +1147,7 @@ class HDPassportScanActivity : AppCompatActivity() {
     private fun onMrzRecognized(passport: PassportMRZ) {
         if (!isFinished.compareAndSet(false, true)) return
 
-        runOnUiThread {
+        runWhenUiAlive {
             mrzOverlay.setGuideColor(COLOR_SUCCESS)
             mrzOverlay.stopScanAnimation()
             vibrateSuccess()
@@ -1093,18 +1155,7 @@ class HDPassportScanActivity : AppCompatActivity() {
             cancelScanTimeout()
             stopCamera()
 
-            val data = Intent().apply {
-                putExtra(EXTRA_DOCUMENT_TYPE, passport.documentType)
-                putExtra(EXTRA_ISSUING_COUNTRY, passport.issuingCountry)
-                putExtra(EXTRA_LAST_NAME, passport.lastName)
-                putExtra(EXTRA_FIRST_NAME, passport.firstName)
-                putExtra(EXTRA_PASSPORT_NUMBER, passport.passportNumber)
-                putExtra(EXTRA_NATIONALITY, passport.nationality)
-                putExtra(EXTRA_DATE_OF_BIRTH, passport.birthDate)
-                putExtra(EXTRA_SEX, passport.sex)
-                putExtra(EXTRA_EXPIRATION_DATE, passport.expiryDate)
-            }
-            setResult(RESULT_OK, data)
+            setResult(RESULT_OK, PassportScanContract.createPassportResultIntent(passport))
             finish()
         }
     }
@@ -1168,6 +1219,7 @@ class HDPassportScanActivity : AppCompatActivity() {
     }
 
     private fun handleRetry(isBlurry: Boolean) {
+        if (!shouldHandleAsyncCallback()) return
         val now = System.currentTimeMillis()
         if (now - lastUiFeedbackTimeMs < RETRY_INTERVAL_MS) return
         lastUiFeedbackTimeMs = now
@@ -1178,12 +1230,12 @@ class HDPassportScanActivity : AppCompatActivity() {
             else -> "여권 하단 MRZ코드 또는\nH.Point 바코드를 박스 안에 맞춰주세요"
         }
 
-        runOnUiThread {
+        runWhenUiAlive {
             mrzOverlay.setGuideColor(COLOR_ERROR)
             tvHint.text = msg
 
             mrzOverlay.postDelayed({
-                if (!isFinished.get()) mrzOverlay.setGuideColor(COLOR_SCANNING)
+                if (shouldHandleAsyncCallback()) mrzOverlay.setGuideColor(COLOR_SCANNING)
             }, 220)
         }
     }
@@ -1465,5 +1517,17 @@ class HDPassportScanActivity : AppCompatActivity() {
 
     private fun showToast(msg: String) {
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun shouldHandleAsyncCallback(): Boolean {
+        return isUiAlive && !isDestroyed && !isFinishing && !isFinished.get()
+    }
+
+    private fun runWhenUiAlive(action: () -> Unit) {
+        if (!isUiAlive) return
+        runOnUiThread {
+            if (!isUiAlive || isDestroyed) return@runOnUiThread
+            action()
+        }
     }
 }
