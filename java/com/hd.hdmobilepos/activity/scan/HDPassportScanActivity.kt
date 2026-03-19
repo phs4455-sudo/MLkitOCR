@@ -214,6 +214,19 @@ class HDPassportScanActivity : AppCompatActivity() {
     private var coreCandidateStableCount: Int = 0
     private var coreLine1Votes: Array<MutableMap<Char, Int>>? = null
     private var coreLine2Votes: Array<MutableMap<Char, Int>>? = null
+    private var dynamicBarcodeProcessIntervalMs: Long = BARCODE_PROCESS_INTERVAL_MS
+    private var dynamicMrzPriorityDurationMs: Long = MRZ_PRIORITY_DURATION_MS
+    private var mrzLikelyConsecutiveCount: Int = 0
+    private var roiMissConsecutiveCount: Int = 0
+    private var sessionStartedAtMs: Long = 0L
+    private var analyzedFrameCount: Int = 0
+    private var barcodeAttemptCount: Int = 0
+    private var blurSkipCount: Int = 0
+    private var mrzPriorityEntryCount: Int = 0
+    private var strictMrzSuccessCount: Int = 0
+    private var stabilizedMrzSuccessCount: Int = 0
+    private var barcodeSuccessCount: Int = 0
+    private var lastAdaptiveFocusKickMs: Long = 0L
 
     // 바코드 스캔은 MRZ보다 가벼운 편이지만, 매 프레임 돌리면 MRZ 인식이 체감상 느려집니다.
     private var lastBarcodeScanMs: Long = 0L
@@ -272,6 +285,7 @@ class HDPassportScanActivity : AppCompatActivity() {
 
         setScanningUi()
         checkCameraPermissionAndStart()
+        resetScannerSessionState()
     }
 
     override fun onResume() {
@@ -319,6 +333,8 @@ class HDPassportScanActivity : AppCompatActivity() {
         if (!cameraExecutor.isShutdown) {
             cameraExecutor.shutdownNow()
         }
+
+        logSessionSummary("destroy")
     }
 
     private fun initViews() {
@@ -539,6 +555,7 @@ class HDPassportScanActivity : AppCompatActivity() {
             }
 
             stopCamera()
+            logSessionSummary("timeout")
             showScanTimeoutDialog()
         }
     }
@@ -601,6 +618,19 @@ class HDPassportScanActivity : AppCompatActivity() {
         coreCandidateStableCount = 0
         coreLine1Votes = null
         coreLine2Votes = null
+        dynamicBarcodeProcessIntervalMs = BARCODE_PROCESS_INTERVAL_MS
+        dynamicMrzPriorityDurationMs = MRZ_PRIORITY_DURATION_MS
+        mrzLikelyConsecutiveCount = 0
+        roiMissConsecutiveCount = 0
+        sessionStartedAtMs = System.currentTimeMillis()
+        analyzedFrameCount = 0
+        barcodeAttemptCount = 0
+        blurSkipCount = 0
+        mrzPriorityEntryCount = 0
+        strictMrzSuccessCount = 0
+        stabilizedMrzSuccessCount = 0
+        barcodeSuccessCount = 0
+        lastAdaptiveFocusKickMs = 0L
         consecutiveMrzFails = 0
         flip180Enabled = false
         flip180Toggle = false
@@ -692,6 +722,18 @@ class HDPassportScanActivity : AppCompatActivity() {
         }
     }
 
+    private fun maybeStepZoomOutForFraming() {
+        val cam = camera ?: return
+        val zoomState = cam.cameraInfo.zoomState.value ?: return
+        if (currentZoomRatio <= max(1.0f, zoomState.minZoomRatio) + 0.01f) return
+
+        val next = (currentZoomRatio - 0.08f).coerceIn(zoomState.minZoomRatio, zoomState.maxZoomRatio)
+        ignoreCameraOperationError("step zoom out for framing") {
+            cam.cameraControl.setZoomRatio(next)
+            currentZoomRatio = next
+        }
+    }
+
 
     private fun maybeMaintainFocus(isBlurry: Boolean) {
         val now = System.currentTimeMillis()
@@ -741,6 +783,7 @@ class HDPassportScanActivity : AppCompatActivity() {
             }
 
             val now = System.currentTimeMillis()
+            analyzedFrameCount++
 
             // 너무 자주/동시에 처리하지 않기(속도/발열/끊김 개선)
             if (!isAnalyzing.compareAndSet(false, true)) {
@@ -791,7 +834,7 @@ class HDPassportScanActivity : AppCompatActivity() {
             val mrzPriority = now < mrzPriorityUntilMs
 
             // H.Point 바코드는 일정 간격으로만 스캔(매 프레임 돌리면 MRZ 인식이 느려짐)
-            val shouldScanBarcode = !mrzPriority && (now - lastBarcodeScanMs >= BARCODE_PROCESS_INTERVAL_MS)
+            val shouldScanBarcode = !mrzPriority && (now - lastBarcodeScanMs >= dynamicBarcodeProcessIntervalMs)
 
             // NOTE: 바코드 → MRZ를 "순차"로 돌리면(바코드가 없는 대부분의 프레임에서)
             //       MRZ 시작 자체가 늦어져 체감이 느려집니다.
@@ -808,6 +851,7 @@ class HDPassportScanActivity : AppCompatActivity() {
 
             if (shouldScanBarcode) {
                 lastBarcodeScanMs = now
+                barcodeAttemptCount++
                 val barcodeInput = InputImage.fromMediaImage(mediaImage, baseRotation)
                 barcodeScanner.process(barcodeInput)
                     .addOnSuccessListener { barcodes ->
@@ -833,6 +877,7 @@ class HDPassportScanActivity : AppCompatActivity() {
             // 선명도 회복(AF)부터 우선시키는 편이 '체감 속도'와 인식률이 좋아집니다.
             val isBlurryNow = blurConsecutiveCount >= 2
             if (isSp60 && isBlurryNow) {
+                blurSkipCount++
                 maybeMaintainFocus(isBlurry = true)
                 handleRetry(isBlurry = true)
                 done() // MRZ OCR 스킵
@@ -979,7 +1024,10 @@ class HDPassportScanActivity : AppCompatActivity() {
             }
 
             val segs = if (roiExpanded != null) roiSegs else allSegs
-            if (roiExpanded != null && roiSegs.isEmpty()) return MrzOutcome.NONE
+            if (roiExpanded != null && roiSegs.isEmpty()) {
+                updateAdaptiveMrzTuning(mrzLikely = false, roiHadSegments = false, isBlurry = blurConsecutiveCount >= 2)
+                return MrzOutcome.NONE
+            }
             if (segs.isEmpty()) return MrzOutcome.NONE
 
             // 대표 높이(중앙값 기반)로 같은 "행" 판단 임계값 계산
@@ -1039,6 +1087,7 @@ class HDPassportScanActivity : AppCompatActivity() {
                 strong >= 2
             }
             if (mrzLikely) bumpMrzPriority(nowMs)
+            updateAdaptiveMrzTuning(mrzLikely = mrzLikely, roiHadSegments = roiSegs.isNotEmpty(), isBlurry = blurConsecutiveCount >= 2)
 
             // row 순서 기반으로 MRZ 후보 생성(정상/역순 두 번 시도)
             val candidate =
@@ -1052,6 +1101,7 @@ class HDPassportScanActivity : AppCompatActivity() {
 
                 if (candidate.isStrict) {
                     clearCoreCandidateStabilization()
+                    strictMrzSuccessCount++
                     Log.i(
                         TAG,
                         "MRZ strict success: passportNo=${passport.passportNumber} birth=${passport.birthDate} expiry=${passport.expiryDate}"
@@ -1067,6 +1117,7 @@ class HDPassportScanActivity : AppCompatActivity() {
                         "stableCount=$coreCandidateStableCount/$CORE_STABILIZATION_REQUIRED_FRAMES"
                 )
                 if (stable) {
+                    stabilizedMrzSuccessCount++
                     val stablePassport = PassportMRZ(buildVotedCoreMrz() ?: (lastCoreCandidateMrz ?: mrzText))
                     Log.i(
                         TAG,
@@ -1110,11 +1161,137 @@ class HDPassportScanActivity : AppCompatActivity() {
     }
 
     private fun bumpMrzPriority(nowMs: Long) {
-        mrzPriorityUntilMs = max(mrzPriorityUntilMs, nowMs + MRZ_PRIORITY_DURATION_MS)
+        if (nowMs >= mrzPriorityUntilMs) mrzPriorityEntryCount++
+        mrzPriorityUntilMs = max(mrzPriorityUntilMs, nowMs + dynamicMrzPriorityDurationMs)
 
         // MRZ가 화면에 들어온 상태로 판단되면, 상단 데모 힌트도 MRZ로 고정합니다.
         updateDemoHint(DemoHintType.MRZ, animate = true)
         positionDemoHintAboveGuide()
+    }
+
+    private fun registerCoreCandidate(passport: PassportMRZ): Boolean {
+        val key = buildString {
+            append(passport.passportNumber)
+            append('|')
+            append(passport.birthDate)
+            append('|')
+            append(passport.expiryDate)
+        }
+        val mrzText = passport.line1 + "\n" + passport.line2
+
+        if (key == "||" || passport.passportNumber.isBlank() || passport.birthDate.isBlank() || passport.expiryDate.isBlank()) {
+            clearCoreCandidateStabilization()
+            return false
+        }
+
+        if (key == lastCoreCandidateKey) {
+            lastCoreCandidateMrz = mrzText
+            coreCandidateStableCount += 1
+            mergeMrzIntoVotes(passport.line1, passport.line2)
+        } else {
+            lastCoreCandidateKey = key
+            lastCoreCandidateMrz = mrzText
+            coreCandidateStableCount = 1
+            resetCoreVotes(passport.line1, passport.line2)
+        }
+
+        return coreCandidateStableCount >= CORE_STABILIZATION_REQUIRED_FRAMES
+    }
+
+    private fun clearCoreCandidateStabilization() {
+        lastCoreCandidateKey = null
+        lastCoreCandidateMrz = null
+        coreCandidateStableCount = 0
+        coreLine1Votes = null
+        coreLine2Votes = null
+    }
+
+    private fun resetCoreVotes(line1: String, line2: String) {
+        coreLine1Votes = Array(line1.length) { linkedMapOf() }
+        coreLine2Votes = Array(line2.length) { linkedMapOf() }
+        mergeMrzIntoVotes(line1, line2)
+    }
+
+    private fun mergeMrzIntoVotes(line1: String, line2: String) {
+        val line1Votes = coreLine1Votes
+        val line2Votes = coreLine2Votes
+        if (line1Votes == null || line2Votes == null) return
+        if (line1Votes.size != line1.length || line2Votes.size != line2.length) return
+
+        line1.forEachIndexed { index, c ->
+            val bucket = line1Votes[index]
+            bucket[c] = (bucket[c] ?: 0) + 1
+        }
+        line2.forEachIndexed { index, c ->
+            val bucket = line2Votes[index]
+            bucket[c] = (bucket[c] ?: 0) + 1
+        }
+    }
+
+    private fun buildVotedCoreMrz(): String? {
+        val line1Votes = coreLine1Votes ?: return null
+        val line2Votes = coreLine2Votes ?: return null
+
+        fun pickLine(votes: Array<MutableMap<Char, Int>>): String {
+            return buildString(votes.size) {
+                votes.forEach { bucket ->
+                    val winner = bucket.entries
+                        .maxWithOrNull(compareBy<Map.Entry<Char, Int>> { it.value }.thenBy { if (it.key == '<') 1 else 0 })
+                        ?.key ?: '<'
+                    append(winner)
+                }
+            }
+        }
+
+        return pickLine(line1Votes) + "\n" + pickLine(line2Votes)
+    }
+
+    private fun updateAdaptiveMrzTuning(
+        mrzLikely: Boolean,
+        roiHadSegments: Boolean,
+        isBlurry: Boolean
+    ) {
+        if (mrzLikely) {
+            mrzLikelyConsecutiveCount += 1
+        } else {
+            mrzLikelyConsecutiveCount = 0
+        }
+
+        roiMissConsecutiveCount = if (roiHadSegments) 0 else roiMissConsecutiveCount + 1
+
+        if (mrzLikely && !isBlurry) {
+            dynamicBarcodeProcessIntervalMs = BARCODE_PROCESS_INTERVAL_MS + 800L
+            dynamicMrzPriorityDurationMs = MRZ_PRIORITY_DURATION_MS + 900L
+
+            val now = System.currentTimeMillis()
+            if (mrzLikelyConsecutiveCount >= 3 && now - lastAdaptiveFocusKickMs >= 1600L) {
+                lastAdaptiveFocusKickMs = now
+                autoFocusOnGuide(force = true)
+            }
+            if (isSp60 && mrzLikelyConsecutiveCount >= 4) {
+                sp60MaybeStepZoomIn(isBlurry = false)
+            }
+        } else {
+            dynamicBarcodeProcessIntervalMs = BARCODE_PROCESS_INTERVAL_MS
+            dynamicMrzPriorityDurationMs = MRZ_PRIORITY_DURATION_MS
+        }
+
+        if (roiMissConsecutiveCount >= 3 && !mrzLikely) {
+            maybeStepZoomOutForFraming()
+            roiMissConsecutiveCount = 0
+        }
+    }
+
+    private fun logSessionSummary(reason: String) {
+        if (sessionStartedAtMs <= 0L) return
+        val elapsedMs = System.currentTimeMillis() - sessionStartedAtMs
+        Log.i(
+            TAG,
+            "session summary: reason=$reason elapsedMs=$elapsedMs analyzedFrames=$analyzedFrameCount " +
+                "barcodeAttempts=$barcodeAttemptCount blurSkips=$blurSkipCount priorityEntries=$mrzPriorityEntryCount " +
+                "strictSuccess=$strictMrzSuccessCount stabilizedSuccess=$stabilizedMrzSuccessCount barcodeSuccess=$barcodeSuccessCount"
+        )
+        sessionStartedAtMs = 0L
     }
 
     private fun registerCoreCandidate(passport: PassportMRZ): Boolean {
@@ -1218,6 +1395,7 @@ class HDPassportScanActivity : AppCompatActivity() {
         if (!isFinished.compareAndSet(false, true)) return
 
         runWhenUiAlive {
+            barcodeSuccessCount++
             mrzOverlay.setGuideColor(COLOR_SUCCESS)
             mrzOverlay.stopScanAnimation()
             vibrateSuccess()
@@ -1226,6 +1404,7 @@ class HDPassportScanActivity : AppCompatActivity() {
             stopCamera()
 
             setResult(RESULT_OK, PassportScanContract.createBarcodeResultIntent(value))
+            logSessionSummary("barcode_success")
             finish()
         }
     }
@@ -1242,6 +1421,7 @@ class HDPassportScanActivity : AppCompatActivity() {
             stopCamera()
 
             setResult(RESULT_OK, PassportScanContract.createPassportResultIntent(passport, isStrict))
+            logSessionSummary(if (isStrict) "mrz_strict_success" else "mrz_core_stabilized_success")
             finish()
         }
     }
