@@ -212,6 +212,8 @@ class HDPassportScanActivity : AppCompatActivity() {
     private var lastCoreCandidateKey: String? = null
     private var lastCoreCandidateMrz: String? = null
     private var coreCandidateStableCount: Int = 0
+    private var coreLine1Votes: Array<MutableMap<Char, Int>>? = null
+    private var coreLine2Votes: Array<MutableMap<Char, Int>>? = null
 
     // 바코드 스캔은 MRZ보다 가벼운 편이지만, 매 프레임 돌리면 MRZ 인식이 체감상 느려집니다.
     private var lastBarcodeScanMs: Long = 0L
@@ -597,6 +599,8 @@ class HDPassportScanActivity : AppCompatActivity() {
         lastCoreCandidateKey = null
         lastCoreCandidateMrz = null
         coreCandidateStableCount = 0
+        coreLine1Votes = null
+        coreLine2Votes = null
         consecutiveMrzFails = 0
         flip180Enabled = false
         flip180Toggle = false
@@ -1063,7 +1067,7 @@ class HDPassportScanActivity : AppCompatActivity() {
                         "stableCount=$coreCandidateStableCount/$CORE_STABILIZATION_REQUIRED_FRAMES"
                 )
                 if (stable) {
-                    val stablePassport = PassportMRZ(lastCoreCandidateMrz ?: mrzText)
+                    val stablePassport = PassportMRZ(buildVotedCoreMrz() ?: (lastCoreCandidateMrz ?: mrzText))
                     Log.i(
                         TAG,
                         "MRZ core stabilized: passportNo=${stablePassport.passportNumber} birth=${stablePassport.birthDate} expiry=${stablePassport.expiryDate} frames=$coreCandidateStableCount"
@@ -1131,10 +1135,12 @@ class HDPassportScanActivity : AppCompatActivity() {
         if (key == lastCoreCandidateKey) {
             lastCoreCandidateMrz = mrzText
             coreCandidateStableCount += 1
+            mergeMrzIntoVotes(passport.line1, passport.line2)
         } else {
             lastCoreCandidateKey = key
             lastCoreCandidateMrz = mrzText
             coreCandidateStableCount = 1
+            resetCoreVotes(passport.line1, passport.line2)
         }
 
         return coreCandidateStableCount >= CORE_STABILIZATION_REQUIRED_FRAMES
@@ -1144,6 +1150,48 @@ class HDPassportScanActivity : AppCompatActivity() {
         lastCoreCandidateKey = null
         lastCoreCandidateMrz = null
         coreCandidateStableCount = 0
+        coreLine1Votes = null
+        coreLine2Votes = null
+    }
+
+    private fun resetCoreVotes(line1: String, line2: String) {
+        coreLine1Votes = Array(line1.length) { linkedMapOf() }
+        coreLine2Votes = Array(line2.length) { linkedMapOf() }
+        mergeMrzIntoVotes(line1, line2)
+    }
+
+    private fun mergeMrzIntoVotes(line1: String, line2: String) {
+        val line1Votes = coreLine1Votes
+        val line2Votes = coreLine2Votes
+        if (line1Votes == null || line2Votes == null) return
+        if (line1Votes.size != line1.length || line2Votes.size != line2.length) return
+
+        line1.forEachIndexed { index, c ->
+            val bucket = line1Votes[index]
+            bucket[c] = (bucket[c] ?: 0) + 1
+        }
+        line2.forEachIndexed { index, c ->
+            val bucket = line2Votes[index]
+            bucket[c] = (bucket[c] ?: 0) + 1
+        }
+    }
+
+    private fun buildVotedCoreMrz(): String? {
+        val line1Votes = coreLine1Votes ?: return null
+        val line2Votes = coreLine2Votes ?: return null
+
+        fun pickLine(votes: Array<MutableMap<Char, Int>>): String {
+            return buildString(votes.size) {
+                votes.forEach { bucket ->
+                    val winner = bucket.entries
+                        .maxWithOrNull(compareBy<Map.Entry<Char, Int>> { it.value }.thenBy { if (it.key == '<') 1 else 0 })
+                        ?.key ?: '<'
+                    append(winner)
+                }
+            }
+        }
+
+        return pickLine(line1Votes) + "\n" + pickLine(line2Votes)
     }
 
     /**
