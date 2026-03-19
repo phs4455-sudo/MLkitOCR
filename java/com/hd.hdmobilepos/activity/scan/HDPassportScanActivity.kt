@@ -77,19 +77,6 @@ class HDPassportScanActivity : AppCompatActivity() {
     private enum class DemoHintType { MRZ, HPOINT }
 
     companion object {
-        // --- Result extras (keep keys to stay compatible with existing Java code) ---
-        const val EXTRA_BARCODE_VALUE = "barcodeValue"
-
-        const val EXTRA_DOCUMENT_TYPE = "documentType"
-        const val EXTRA_ISSUING_COUNTRY = "issuingCountry"
-        const val EXTRA_LAST_NAME = "lastName"
-        const val EXTRA_FIRST_NAME = "firstName"
-        const val EXTRA_PASSPORT_NUMBER = "passportNumber"
-        const val EXTRA_NATIONALITY = "nationality"
-        const val EXTRA_DATE_OF_BIRTH = "dateOfBirth"
-        const val EXTRA_SEX = "sex"
-        const val EXTRA_EXPIRATION_DATE = "expirationDate"
-
         private val COLOR_SCANNING = Color.WHITE
         private val COLOR_SUCCESS = Color.parseColor("#2ECC71")
         private val COLOR_ERROR = Color.parseColor("#FF3B30")
@@ -1074,10 +1061,7 @@ class HDPassportScanActivity : AppCompatActivity() {
             cancelScanTimeout()
             stopCamera()
 
-            val data = Intent().apply {
-                putExtra(EXTRA_BARCODE_VALUE, value)
-            }
-            setResult(RESULT_OK, data)
+            setResult(RESULT_OK, PassportScanContract.createBarcodeResultIntent(value))
             finish()
         }
     }
@@ -1093,18 +1077,7 @@ class HDPassportScanActivity : AppCompatActivity() {
             cancelScanTimeout()
             stopCamera()
 
-            val data = Intent().apply {
-                putExtra(EXTRA_DOCUMENT_TYPE, passport.documentType)
-                putExtra(EXTRA_ISSUING_COUNTRY, passport.issuingCountry)
-                putExtra(EXTRA_LAST_NAME, passport.lastName)
-                putExtra(EXTRA_FIRST_NAME, passport.firstName)
-                putExtra(EXTRA_PASSPORT_NUMBER, passport.passportNumber)
-                putExtra(EXTRA_NATIONALITY, passport.nationality)
-                putExtra(EXTRA_DATE_OF_BIRTH, passport.birthDate)
-                putExtra(EXTRA_SEX, passport.sex)
-                putExtra(EXTRA_EXPIRATION_DATE, passport.expiryDate)
-            }
-            setResult(RESULT_OK, data)
+            setResult(RESULT_OK, PassportScanContract.createPassportResultIntent(passport))
             finish()
         }
     }
