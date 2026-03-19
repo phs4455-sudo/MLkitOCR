@@ -124,6 +124,14 @@ class HDPassportScanActivity : AppCompatActivity() {
         private const val TAG = "HDPassportScan"
     }
 
+    private inline fun ignoreCameraOperationError(operation: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (e: Exception) {
+            Log.w(TAG, "$operation failed", e)
+        }
+    }
+
     private lateinit var previewView: PreviewView
     private lateinit var mrzOverlay: MrzOverlayView
     private lateinit var tvHint: TextView
@@ -206,12 +214,6 @@ class HDPassportScanActivity : AppCompatActivity() {
     // MRZ가 "화면에 크게 들어온" 상황에서는 바코드 스캔이 MRZ 인식 시도를 가로막지 않도록,
     // 일정 시간 동안 바코드 스캔을 멈추고(MRZ 우선) MRZ 인식에 집중합니다.
     private var mrzPriorityUntilMs: Long = 0L
-
-    // --- Relaxed MRZ(핵심 필드만 검증) 안정화 ---
-    // 개인번호/최종 체크디지트는 OCR에서 흔히 깨지므로(특히 가까이 촬영/하단 노이즈),
-    // "핵심 필드"만 통과한 후보는 2프레임 연속 동일할 때 성공 처리(정확도+속도 균형).
-    private var weakMrzStableCount: Int = 0
-    private var lastWeakMrzKey: String? = null
 
     private var isTorchOn: Boolean = false
 
@@ -303,14 +305,8 @@ class HDPassportScanActivity : AppCompatActivity() {
         dismissTimeoutDialog()
         stopCamera()
 
-        try {
-            textRecognizer.close()
-        } catch (_: Exception) {
-        }
-        try {
-            barcodeScanner.close()
-        } catch (_: Exception) {
-        }
+        ignoreCameraOperationError("text recognizer close") { textRecognizer.close() }
+        ignoreCameraOperationError("barcode scanner close") { barcodeScanner.close() }
 
         if (!cameraExecutor.isShutdown) {
             cameraExecutor.shutdownNow()
@@ -369,10 +365,9 @@ class HDPassportScanActivity : AppCompatActivity() {
                     val next = (currentZoomRatio * detector.scaleFactor)
                         .coerceIn(minZoom, maxZoom)
 
-                    try {
+                    ignoreCameraOperationError("pinch zoom") {
                         cam.cameraControl.setZoomRatio(next)
                         currentZoomRatio = next
-                    } catch (_: Exception) {
                     }
                     return true
                 }
@@ -436,7 +431,7 @@ class HDPassportScanActivity : AppCompatActivity() {
                         .setTargetRotation(previewView.display.rotation)
 
                     // SP60: continuous AF를 강제(가능한 범위 내에서)
-                    try {
+                    ignoreCameraOperationError("preview capture request tuning") {
                         val extender = Camera2Interop.Extender(previewBuilder)
                         extender.setCaptureRequestOption(
                             CaptureRequest.CONTROL_AF_MODE,
@@ -446,7 +441,6 @@ class HDPassportScanActivity : AppCompatActivity() {
                             CaptureRequest.CONTROL_AE_MODE,
                             CaptureRequest.CONTROL_AE_MODE_ON
                         )
-                    } catch (_: Exception) {
                     }
 
                     val preview = previewBuilder.build()
@@ -459,7 +453,7 @@ class HDPassportScanActivity : AppCompatActivity() {
                         .setImageQueueDepth(1)
                         .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
 
-                    try {
+                    ignoreCameraOperationError("analysis capture request tuning") {
                         val extender = Camera2Interop.Extender(analysisBuilder)
                         extender.setCaptureRequestOption(
                             CaptureRequest.CONTROL_AF_MODE,
@@ -469,7 +463,6 @@ class HDPassportScanActivity : AppCompatActivity() {
                             CaptureRequest.CONTROL_AE_MODE,
                             CaptureRequest.CONTROL_AE_MODE_ON
                         )
-                    } catch (_: Exception) {
                     }
 
                     imageAnalysis = analysisBuilder
@@ -495,7 +488,7 @@ class HDPassportScanActivity : AppCompatActivity() {
                         setInitialZoomIfPossible(if (isSp60) SP60_INITIAL_ZOOM_RATIO else 1.0f)
                     }
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    Log.e(TAG, "failed to bind camera use cases", e)
                     showToast("카메라 초기화 실패")
                     finish()
                 }
@@ -531,15 +524,10 @@ class HDPassportScanActivity : AppCompatActivity() {
 
         runWhenUiAlive {
             Log.w(TAG, "scan timeout reached; stopping current session")
-            try {
-                stopDemoHintCarousel()
-            } catch (_: Exception) {
-            }
-
-            try {
+            ignoreCameraOperationError("stop demo hint carousel") { stopDemoHintCarousel() }
+            ignoreCameraOperationError("show timeout error state") {
                 mrzOverlay.setGuideColor(COLOR_ERROR)
                 mrzOverlay.stopScanAnimation()
-            } catch (_: Exception) {
             }
 
             stopCamera()
@@ -600,8 +588,6 @@ class HDPassportScanActivity : AppCompatActivity() {
         lastProcessStartMs = 0L
         lastBarcodeScanMs = 0L
         blurConsecutiveCount = 0
-        weakMrzStableCount = 0
-        lastWeakMrzKey = null
         consecutiveMrzFails = 0
         flip180Enabled = false
         flip180Toggle = false
@@ -627,15 +613,8 @@ class HDPassportScanActivity : AppCompatActivity() {
 
         // 일부 PDA에서는 이전 메터링이 남아 있으면 AF가 점점 불안정해질 수 있어,
         // 새 메터링을 시작하기 전에 한 번 cancel 해주는 편이 안정적입니다.
-        try {
-            cam.cameraControl.cancelFocusAndMetering()
-        } catch (_: Exception) {
-        }
-
-        try {
-            cam.cameraControl.startFocusAndMetering(action)
-        } catch (_: Exception) {
-        }
+        ignoreCameraOperationError("cancel focus metering") { cam.cameraControl.cancelFocusAndMetering() }
+        ignoreCameraOperationError("start focus metering") { cam.cameraControl.startFocusAndMetering(action) }
     }
 
     private fun autoFocusOnGuide(force: Boolean = false) {
@@ -663,10 +642,9 @@ class HDPassportScanActivity : AppCompatActivity() {
         // 불필요한 호출 방지
         if (abs(z - currentZoomRatio) < 0.01f) return
 
-        try {
+        ignoreCameraOperationError("set initial zoom") {
             cam.cameraControl.setZoomRatio(z)
             currentZoomRatio = z
-        } catch (_: Exception) {
         }
     }
 
@@ -695,10 +673,9 @@ class HDPassportScanActivity : AppCompatActivity() {
 
         val next = (currentZoomRatio + 0.10f).coerceIn(zoomState.minZoomRatio, targetMax)
 
-        try {
+        ignoreCameraOperationError("step zoom in") {
             cam.cameraControl.setZoomRatio(next)
             currentZoomRatio = next
-        } catch (_: Exception) {
         }
     }
 
@@ -874,9 +851,8 @@ class HDPassportScanActivity : AppCompatActivity() {
                         }
                         MrzOutcome.PROGRESS -> {
                             // MRZ가 "화면에 있음"은 확실한데(핵심 필드 유효),
-                            // 개인번호/최종 체크디지트가 흔들리는 상황.
-                            // - 실패 카운트/에러 UI를 올리지 않고
-                            // - MRZ 우선 모드로 잠깐 고정해 다음 프레임에서 안정화되도록 합니다.
+                            // OCR 결과가 흔들리는 상황이므로 실패 UI를 띄우지 않고
+                            // MRZ 우선 모드로 잠깐 고정해 다음 프레임 인식을 돕습니다.
                             consecutiveMrzFails = 0
                             flip180Enabled = false
                             bumpMrzPriority(System.currentTimeMillis())
@@ -916,7 +892,7 @@ class HDPassportScanActivity : AppCompatActivity() {
         /**
          * @return
          * - SUCCESS: 체크디지트 포함 "완전" 유효 MRZ
-         * - PROGRESS: 핵심 필드만 유효(2프레임 안정화 후 성공 처리)
+         * - PROGRESS: 핵심 필드만 유효(MRZ 우선 모드 유지)
          * - NONE: 후보 없음
          */
         private fun onTextRecognized(
@@ -960,7 +936,8 @@ class HDPassportScanActivity : AppCompatActivity() {
                 r.bottom = r.bottom.coerceIn(0f, imgH)
 
                 if (r.width() < 10f || r.height() < 10f) null else r
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.w(TAG, "failed to map ROI into image coordinates", e)
                 null
             }
 
@@ -1060,9 +1037,7 @@ class HDPassportScanActivity : AppCompatActivity() {
                 val mrzText = candidate.line1 + "\n" + candidate.line2
 
                 // core/strict 모두 업무에 필요한 필드(여권번호/생년월일/만료일)는 충분히 신뢰할 수 있으므로
-                // 즉시 성공 처리합니다. (SP60 근접 촬영에서 personal/final 영역 흔들림으로 인한 지연 방지)
-                weakMrzStableCount = 0
-                lastWeakMrzKey = null
+                // 현재 구현은 즉시 성공 처리합니다. (SP60 근접 촬영에서 personal/final 영역 흔들림으로 인한 지연 방지)
                 onMrzRecognized(PassportMRZ(mrzText))
                 return MrzOutcome.SUCCESS
             }
@@ -1074,16 +1049,13 @@ class HDPassportScanActivity : AppCompatActivity() {
             // rows(라인) 기반으로 후보를 만들고,
             // 1) strict(개인번호/최종CD 포함) 먼저
             // 2) strict가 안 되면 core(여권번호/생년월일/만료일)만 통과한 후보를 반환
-            //    → Activity에서 2프레임 안정화 후 성공 처리
+            //    → Activity에서 MRZ 우선 모드 유지 및 즉시 성공 처리
             return MRZUtils.findBestTd3PassportMrzCandidateFromRows(lines)
         }
     }
 
     private fun finishFrame(imageProxy: ImageProxy) {
-        try {
-            imageProxy.close()
-        } catch (_: Exception) {
-        }
+        ignoreCameraOperationError("close image frame") { imageProxy.close() }
         isAnalyzing.set(false)
     }
 
@@ -1358,7 +1330,8 @@ class HDPassportScanActivity : AppCompatActivity() {
                 return AnalysisProfile(bestAny, aspect)
             }
             null
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "failed to choose analysis profile", e)
             null
         }
     }
@@ -1402,7 +1375,8 @@ class HDPassportScanActivity : AppCompatActivity() {
             }
 
             if (cnt == 0L) 0.0 else (sum.toDouble() / cnt.toDouble())
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "failed to estimate sharpness", e)
             0.0
         }
     }
@@ -1504,14 +1478,13 @@ class HDPassportScanActivity : AppCompatActivity() {
         val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator ?: return
         if (!vibrator.hasVibrator()) return
 
-        try {
+        ignoreCameraOperationError("vibrate success feedback") {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 vibrator.vibrate(VibrationEffect.createOneShot(60, VibrationEffect.DEFAULT_AMPLITUDE))
             } else {
                 @Suppress("DEPRECATION")
                 vibrator.vibrate(60)
             }
-        } catch (_: Exception) {
         }
     }
 
