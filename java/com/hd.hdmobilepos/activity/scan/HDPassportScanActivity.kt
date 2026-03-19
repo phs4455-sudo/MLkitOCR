@@ -26,6 +26,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.AspectRatio
 import androidx.camera.camera2.interop.Camera2Interop
@@ -178,6 +179,7 @@ class HDPassportScanActivity : AppCompatActivity() {
     private lateinit var textRecognizer: TextRecognizer
     private lateinit var barcodeScanner: BarcodeScanner
     private lateinit var cameraExecutor: ExecutorService
+    private var timeoutDialog: AlertDialog? = null
 
     private val isFinished = AtomicBoolean(false)
     private val isAnalyzing = AtomicBoolean(false)
@@ -288,6 +290,8 @@ class HDPassportScanActivity : AppCompatActivity() {
         super.onPause()
         cancelScanTimeout()
         stopDemoHintCarousel()
+        timeoutDialog?.dismiss()
+        timeoutDialog = null
         mrzOverlay.stopScanAnimation()
         stopCamera()
     }
@@ -297,6 +301,8 @@ class HDPassportScanActivity : AppCompatActivity() {
         super.onDestroy()
         cancelScanTimeout()
         stopDemoHintCarousel()
+        timeoutDialog?.dismiss()
+        timeoutDialog = null
         stopCamera()
 
         try {
@@ -538,10 +544,54 @@ class HDPassportScanActivity : AppCompatActivity() {
             }
 
             stopCamera()
+            showScanTimeoutDialog()
+        }
+    }
 
-            showToast("스캔 시간이 초과되어 종료합니다.")
-            setResult(RESULT_CANCELED)
-            finish()
+    private fun showScanTimeoutDialog() {
+        timeoutDialog?.dismiss()
+        timeoutDialog = AlertDialog.Builder(this)
+            .setTitle("스캔 시간 초과")
+            .setMessage("인식 시간이 초과되었습니다.\n다시 시도하거나 스캔을 종료할 수 있습니다.")
+            .setCancelable(false)
+            .setPositiveButton("다시 시도") { dialog, _ ->
+                dialog.dismiss()
+                timeoutDialog = null
+                restartScannerSessionAfterTimeout()
+            }
+            .setNegativeButton("닫기") { dialog, _ ->
+                dialog.dismiss()
+                timeoutDialog = null
+                setResult(RESULT_CANCELED)
+                finish()
+            }
+            .show()
+    }
+
+    private fun restartScannerSessionAfterTimeout() {
+        if (!isUiAlive || isDestroyed) return
+
+        isFinished.set(false)
+        isAnalyzing.set(false)
+        blurConsecutiveCount = 0
+        consecutiveMrzFails = 0
+        flip180Enabled = false
+        flip180Toggle = false
+        mrzPriorityUntilMs = 0L
+
+        setScanningUi()
+        mrzOverlay.startScanAnimation()
+        startDemoHintCarousel()
+        scheduleScanTimeout()
+
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            bindCameraUseCases()
+        } else {
+            permissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
 
