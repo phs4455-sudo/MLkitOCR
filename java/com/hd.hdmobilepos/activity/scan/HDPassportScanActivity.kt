@@ -290,8 +290,7 @@ class HDPassportScanActivity : AppCompatActivity() {
         super.onPause()
         cancelScanTimeout()
         stopDemoHintCarousel()
-        timeoutDialog?.dismiss()
-        timeoutDialog = null
+        dismissTimeoutDialog()
         mrzOverlay.stopScanAnimation()
         stopCamera()
     }
@@ -301,8 +300,7 @@ class HDPassportScanActivity : AppCompatActivity() {
         super.onDestroy()
         cancelScanTimeout()
         stopDemoHintCarousel()
-        timeoutDialog?.dismiss()
-        timeoutDialog = null
+        dismissTimeoutDialog()
         stopCamera()
 
         try {
@@ -532,6 +530,7 @@ class HDPassportScanActivity : AppCompatActivity() {
         if (!isFinished.compareAndSet(false, true)) return
 
         runWhenUiAlive {
+            Log.w(TAG, "scan timeout reached; stopping current session")
             try {
                 stopDemoHintCarousel()
             } catch (_: Exception) {
@@ -549,7 +548,7 @@ class HDPassportScanActivity : AppCompatActivity() {
     }
 
     private fun showScanTimeoutDialog() {
-        timeoutDialog?.dismiss()
+        dismissTimeoutDialog()
         timeoutDialog = AlertDialog.Builder(this)
             .setTitle("스캔 시간 초과")
             .setMessage("인식 시간이 초과되었습니다.\n다시 시도하거나 스캔을 종료할 수 있습니다.")
@@ -557,11 +556,13 @@ class HDPassportScanActivity : AppCompatActivity() {
             .setPositiveButton("다시 시도") { dialog, _ ->
                 dialog.dismiss()
                 timeoutDialog = null
+                Log.i(TAG, "scan timeout dialog: retry selected")
                 restartScannerSessionAfterTimeout()
             }
             .setNegativeButton("닫기") { dialog, _ ->
                 dialog.dismiss()
                 timeoutDialog = null
+                Log.i(TAG, "scan timeout dialog: close selected")
                 setResult(RESULT_CANCELED)
                 finish()
             }
@@ -571,15 +572,11 @@ class HDPassportScanActivity : AppCompatActivity() {
     private fun restartScannerSessionAfterTimeout() {
         if (!isUiAlive || isDestroyed) return
 
-        isFinished.set(false)
-        isAnalyzing.set(false)
-        blurConsecutiveCount = 0
-        consecutiveMrzFails = 0
-        flip180Enabled = false
-        flip180Toggle = false
-        mrzPriorityUntilMs = 0L
-
+        Log.i(TAG, "restarting scanner session after timeout")
+        resetScannerSessionState()
         setScanningUi()
+        updateDemoHint(DemoHintType.MRZ, animate = false)
+        positionDemoHintAboveGuide()
         mrzOverlay.startScanAnimation()
         startDemoHintCarousel()
         scheduleScanTimeout()
@@ -593,6 +590,28 @@ class HDPassportScanActivity : AppCompatActivity() {
         } else {
             permissionLauncher.launch(Manifest.permission.CAMERA)
         }
+    }
+
+    private fun resetScannerSessionState() {
+        isFinished.set(false)
+        isAnalyzing.set(false)
+        lastUiFeedbackTimeMs = 0L
+        lastProgressUiMs = 0L
+        lastProcessStartMs = 0L
+        lastBarcodeScanMs = 0L
+        blurConsecutiveCount = 0
+        weakMrzStableCount = 0
+        lastWeakMrzKey = null
+        consecutiveMrzFails = 0
+        flip180Enabled = false
+        flip180Toggle = false
+        mrzPriorityUntilMs = 0L
+        lastSp60AutoZoomMs = 0L
+    }
+
+    private fun dismissTimeoutDialog() {
+        timeoutDialog?.dismiss()
+        timeoutDialog = null
     }
 
     private fun startFocusAt(x: Float, y: Float, autoCancelSeconds: Long = 2L) {
