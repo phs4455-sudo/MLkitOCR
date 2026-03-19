@@ -4,8 +4,8 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.ImageFormat
 import android.graphics.Color
+import android.graphics.ImageFormat
 import android.graphics.Rect
 import android.graphics.RectF
 import android.hardware.camera2.CameraCharacteristics
@@ -13,6 +13,7 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.os.Build
 import android.os.Bundle
+import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.util.Log
@@ -125,6 +126,7 @@ class HDPassportScanActivity : AppCompatActivity() {
 
         /** core 후보는 1프레임만으로 성공시키지 않고, 같은 핵심 필드가 연속 확인되어야 성공 */
         private const val CORE_STABILIZATION_REQUIRED_FRAMES = 3
+
     }
 
     private inline fun ignoreCameraOperationError(operation: String, block: () -> Unit) {
@@ -614,6 +616,13 @@ class HDPassportScanActivity : AppCompatActivity() {
     }
 
     private fun startFocusAt(x: Float, y: Float, autoCancelSeconds: Long = 2L) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            if (this::previewView.isInitialized) {
+                previewView.post { startFocusAt(x, y, autoCancelSeconds) }
+            }
+            return
+        }
+
         val cam = camera ?: return
         val meteringPoint = previewView.meteringPointFactory.createPoint(x, y)
 
