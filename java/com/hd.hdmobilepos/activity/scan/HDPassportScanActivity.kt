@@ -4,8 +4,10 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.ImageFormat
+import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.ImageFormat
+import android.graphics.Matrix
 import android.graphics.Rect
 import android.graphics.RectF
 import android.hardware.camera2.CameraCharacteristics
@@ -125,6 +127,10 @@ class HDPassportScanActivity : AppCompatActivity() {
 
         /** core 후보는 1프레임만으로 성공시키지 않고, 같은 핵심 필드가 연속 확인되어야 성공 */
         private const val CORE_STABILIZATION_REQUIRED_FRAMES = 3
+
+        /** ROI crop OCR은 너무 작은 입력이면 오히려 손해라 최소 크기를 둡니다 */
+        private const val MIN_ROI_OCR_WIDTH = 320
+        private const val MIN_ROI_OCR_HEIGHT = 96
     }
 
     private inline fun ignoreCameraOperationError(operation: String, block: () -> Unit) {
@@ -848,7 +854,7 @@ class HDPassportScanActivity : AppCompatActivity() {
             onDone: () -> Unit
         ) {
             val rotationForMrz = chooseMrzRotation(baseRotation)
-            val inputImage = InputImage.fromMediaImage(mediaImage, rotationForMrz)
+            val inputImage = buildMrzInputImage(imageProxy, mediaImage, rotationForMrz)
 
             textRecognizer.process(inputImage)
                 .addOnSuccessListener { visionText ->
@@ -900,6 +906,24 @@ class HDPassportScanActivity : AppCompatActivity() {
                 .addOnCompleteListener {
                     onDone()
                 }
+        }
+
+        private fun buildMrzInputImage(
+            imageProxy: ImageProxy,
+            mediaImage: android.media.Image,
+            rotationForMrz: Int
+        ): InputImage {
+            if (!shouldPreferGuideRoiOcr()) {
+                return InputImage.fromMediaImage(mediaImage, rotationForMrz)
+            }
+
+            val roiImage = buildGuideRoiInputImage(imageProxy, rotationForMrz)
+            return roiImage ?: InputImage.fromMediaImage(mediaImage, rotationForMrz)
+        }
+
+        private fun shouldPreferGuideRoiOcr(): Boolean {
+            val now = System.currentTimeMillis()
+            return now < mrzPriorityUntilMs || consecutiveMrzFails >= 2 || flip180Enabled
         }
 
         /**
@@ -1094,6 +1118,47 @@ class HDPassportScanActivity : AppCompatActivity() {
     private fun finishFrame(imageProxy: ImageProxy) {
         ignoreCameraOperationError("close image frame") { imageProxy.close() }
         isAnalyzing.set(false)
+    }
+
+    private fun buildGuideRoiInputImage(
+        imageProxy: ImageProxy,
+        rotationDegrees: Int
+    ): InputImage? {
+        return try {
+            val roiUpright = mapPreviewRectToImageRect(
+                roiView = mrzOverlay.guideRect,
+                previewView = previewView,
+                imageProxy = imageProxy,
+                rotationDegrees = rotationDegrees
+            )
+
+            if (roiUpright.width() < 10f || roiUpright.height() < 10f) return null
+
+            val paddedUpright = RectF(roiUpright).apply {
+                val padX = width() * 0.12f
+                val padY = height() * 0.35f
+                inset(-padX, -padY)
+            }
+
+            val rawRect = uprightRectToRawImageRect(
+                uprightRect = paddedUpright,
+                rawWidth = imageProxy.width,
+                rawHeight = imageProxy.height,
+                rotationDegrees = rotationDegrees
+            )
+
+            if (rawRect.width() < MIN_ROI_OCR_WIDTH || rawRect.height() < MIN_ROI_OCR_HEIGHT) {
+                return null
+            }
+
+            val roiBitmap = createGrayscaleBitmapFromYPlane(imageProxy, rawRect, rotationDegrees)
+                ?: return null
+
+            InputImage.fromBitmap(roiBitmap, 0)
+        } catch (e: Exception) {
+            Log.w(TAG, "failed to build ROI OCR input image", e)
+            null
+        }
     }
 
     /**
@@ -1493,6 +1558,89 @@ class HDPassportScanActivity : AppCompatActivity() {
             Log.w(TAG, "failed to estimate sharpness", e)
             0.0
         }
+    }
+
+    private fun uprightRectToRawImageRect(
+        uprightRect: RectF,
+        rawWidth: Int,
+        rawHeight: Int,
+        rotationDegrees: Int
+    ): Rect {
+        if (rawWidth <= 0 || rawHeight <= 0) return Rect()
+
+        val uprightWidth = if (rotationDegrees == 90 || rotationDegrees == 270) rawHeight.toFloat() else rawWidth.toFloat()
+        val uprightHeight = if (rotationDegrees == 90 || rotationDegrees == 270) rawWidth.toFloat() else rawHeight.toFloat()
+
+        val clamped = RectF(
+            uprightRect.left.coerceIn(0f, uprightWidth),
+            uprightRect.top.coerceIn(0f, uprightHeight),
+            uprightRect.right.coerceIn(0f, uprightWidth),
+            uprightRect.bottom.coerceIn(0f, uprightHeight)
+        )
+
+        if (clamped.width() <= 1f || clamped.height() <= 1f) return Rect()
+
+        fun mapPoint(u: Float, v: Float): Pair<Float, Float> {
+            return when ((rotationDegrees % 360 + 360) % 360) {
+                90 -> Pair(v, rawHeight - u)
+                180 -> Pair(rawWidth - u, rawHeight - v)
+                270 -> Pair(rawWidth - v, u)
+                else -> Pair(u, v)
+            }
+        }
+
+        val points = listOf(
+            mapPoint(clamped.left, clamped.top),
+            mapPoint(clamped.right, clamped.top),
+            mapPoint(clamped.left, clamped.bottom),
+            mapPoint(clamped.right, clamped.bottom)
+        )
+
+        val left = points.minOf { it.first }.toInt().coerceIn(0, rawWidth)
+        val top = points.minOf { it.second }.toInt().coerceIn(0, rawHeight)
+        val right = kotlin.math.ceil(points.maxOf { it.first }.toDouble()).toInt().coerceIn(0, rawWidth)
+        val bottom = kotlin.math.ceil(points.maxOf { it.second }.toDouble()).toInt().coerceIn(0, rawHeight)
+
+        return Rect(left, top, right, bottom)
+    }
+
+    private fun createGrayscaleBitmapFromYPlane(
+        imageProxy: ImageProxy,
+        rawRect: Rect,
+        rotationDegrees: Int
+    ): Bitmap? {
+        if (rawRect.width() <= 1 || rawRect.height() <= 1) return null
+
+        val plane = imageProxy.planes.firstOrNull() ?: return null
+        val buffer = plane.buffer.duplicate()
+        val rowStride = plane.rowStride
+        val pixelStride = plane.pixelStride
+
+        if (rowStride <= 0 || pixelStride <= 0) return null
+
+        val width = rawRect.width()
+        val height = rawRect.height()
+        val pixels = IntArray(width * height)
+
+        for (y in 0 until height) {
+            val srcY = rawRect.top + y
+            val rowBase = srcY * rowStride
+            val outRow = y * width
+            for (x in 0 until width) {
+                val srcX = rawRect.left + x
+                val luma = buffer.get(rowBase + srcX * pixelStride).toInt() and 0xFF
+                val color = -0x1000000 or (luma shl 16) or (luma shl 8) or luma
+                pixels[outRow + x] = color
+            }
+        }
+
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+
+        if (rotationDegrees == 0) return bitmap
+
+        val matrix = Matrix().apply { postRotate(rotationDegrees.toFloat()) }
+        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
     }
 
     // ------------------------------------------------------------
