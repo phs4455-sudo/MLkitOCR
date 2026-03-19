@@ -122,6 +122,7 @@ class HDPassportScanActivity : AppCompatActivity() {
         private const val SP60_AF_KICK_INTERVAL_MS = 2500L
 
         private const val TAG = "HDPassportScan"
+        private const val PREF_SCAN_TUNING = "passport_scan_tuning"
     }
 
     private inline fun ignoreCameraOperationError(operation: String, block: () -> Unit) {
@@ -1110,6 +1111,7 @@ class HDPassportScanActivity : AppCompatActivity() {
 
             cancelScanTimeout()
             stopCamera()
+            persistSuccessfulAnalysisProfile()
 
             setResult(RESULT_OK, PassportScanContract.createBarcodeResultIntent(value))
             finish()
@@ -1126,6 +1128,7 @@ class HDPassportScanActivity : AppCompatActivity() {
 
             cancelScanTimeout()
             stopCamera()
+            persistSuccessfulAnalysisProfile()
 
             setResult(RESULT_OK, PassportScanContract.createPassportResultIntent(passport))
             finish()
@@ -1224,7 +1227,7 @@ class HDPassportScanActivity : AppCompatActivity() {
             bottomPx = bottomPanel.height.toFloat() + dpToPx(10f)
         )
 
-        val profile = chooseAnalysisProfileFromCamera()
+        val profile = loadSavedAnalysisProfile() ?: chooseAnalysisProfileFromCamera()
         if (profile != null) {
             analysisSize = profile.size
             targetAspectRatio = profile.aspectRatio
@@ -1263,6 +1266,45 @@ class HDPassportScanActivity : AppCompatActivity() {
     }
 
     private data class AnalysisProfile(val size: Size, val aspectRatio: Int)
+
+    private fun analysisProfilePreferenceKey(suffix: String): String {
+        val model = (Build.MODEL ?: "unknown").uppercase(Locale.ROOT)
+        val device = (Build.DEVICE ?: "unknown").uppercase(Locale.ROOT)
+        val product = (Build.PRODUCT ?: "unknown").uppercase(Locale.ROOT)
+        return "${model}_${device}_${product}_$suffix"
+    }
+
+    private fun loadSavedAnalysisProfile(): AnalysisProfile? {
+        return try {
+            val prefs = getSharedPreferences(PREF_SCAN_TUNING, Context.MODE_PRIVATE)
+            val width = prefs.getInt(analysisProfilePreferenceKey("width"), 0)
+            val height = prefs.getInt(analysisProfilePreferenceKey("height"), 0)
+            val aspect = prefs.getInt(analysisProfilePreferenceKey("aspect"), -1)
+
+            if (width <= 0 || height <= 0) return null
+            if (aspect != AspectRatio.RATIO_4_3 && aspect != AspectRatio.RATIO_16_9) return null
+
+            AnalysisProfile(Size(width, height), aspect)
+        } catch (e: Exception) {
+            Log.w(TAG, "failed to load saved analysis profile", e)
+            null
+        }
+    }
+
+    private fun persistSuccessfulAnalysisProfile() {
+        if (analysisSize.width <= 0 || analysisSize.height <= 0) return
+
+        try {
+            getSharedPreferences(PREF_SCAN_TUNING, Context.MODE_PRIVATE)
+                .edit()
+                .putInt(analysisProfilePreferenceKey("width"), analysisSize.width)
+                .putInt(analysisProfilePreferenceKey("height"), analysisSize.height)
+                .putInt(analysisProfilePreferenceKey("aspect"), targetAspectRatio)
+                .apply()
+        } catch (e: Exception) {
+            Log.w(TAG, "failed to persist analysis profile", e)
+        }
+    }
 
     /**
      * Camera2의 YUV_420_888 지원 해상도 목록에서 "너무 크지 않으면서" 선명도는 유지되는 분석용 Size를 선택합니다.
