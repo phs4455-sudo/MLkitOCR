@@ -17,7 +17,7 @@ import com.google.mlkit.vision.text.TextRecognizer;
 import com.hd.hdmobilepos.GlobalApp;
 import com.hd.hdmobilepos.R;
 import com.hd.hdmobilepos.activity.BaseActivity;
-import com.hd.hdmobilepos.activity.scan.HDPassportScanActivity;
+import com.hd.hdmobilepos.activity.scan.PassportScanContract;
 import com.hd.hdmobilepos.common.HDEditor;
 import com.hd.hdmobilepos.common.NumberKeyboard;
 import com.hd.hdmobilepos.common.TitleBar;
@@ -52,6 +52,7 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Dictionary;
 import java.util.Hashtable;
+import java.util.Locale;
 
 /**
  * 기타결제 - 즉시환급
@@ -209,6 +210,67 @@ public class HDTaxRefundActivity extends BaseActivity implements View.OnClickLis
     /**
      * 남/여 토글키
      */
+    private void applyPassportGender(String sex) {
+        if (sex == null || sex.trim().isEmpty()) {
+            showPopup("성별을 확인해주세요.");
+            return;
+        }
+
+        String normalizedSex = sex.trim().toUpperCase(Locale.ROOT);
+        switch (normalizedSex) {
+            case "M":
+                mIsTogleMan = true;
+                strGender = "M";
+                changeToggle();
+                return;
+            case "F":
+                mIsTogleMan = false;
+                strGender = "F";
+                changeToggle();
+                return;
+            default:
+                Log.w("RESULT", "지원하지 않는 성별 코드: " + normalizedSex);
+                showPopup("성별을 확인해주세요.");
+        }
+    }
+
+    private void clearScannedPassportFields() {
+        binding.etCountry.setText("");
+        binding.etPassport.setText("");
+        binding.etCountry.setText("");
+        binding.etLastNm.setText("");
+        binding.etFirstNm.setText("");
+        binding.etBirth.setText("");
+        binding.etValiditty.setText("");
+    }
+
+    private void applyPassportScanResult(PassportScanContract.ScanResult.Passport passport) {
+        isSensed = "1";
+
+        Log.d("RESULT", "여권 스캔 완료: nationality=" + passport.getNationality() +
+                ", sex=" + passport.getSex() +
+                ", passportNumberLength=" + passport.getPassportNumber().length());
+
+        binding.etCountry.setText(passport.getNationality());
+        binding.etPassport.setText(passport.getPassportNumber());
+        binding.etLastNm.setText(passport.getLastName());
+        binding.etFirstNm.setText(passport.getFirstName());
+        binding.etBirth.setText(passport.getDateOfBirth());
+        binding.etValiditty.setText(passport.getExpirationDate());
+        applyPassportGender(passport.getSex());
+    }
+
+    private void applyScanResult(PassportScanContract.ScanResult scanResult) {
+        if (scanResult instanceof PassportScanContract.ScanResult.Barcode) {
+            PassportScanContract.ScanResult.Barcode barcode = (PassportScanContract.ScanResult.Barcode) scanResult;
+            isSensed = "2";
+            getHPointCustomInfo(barcode.getValue());
+            return;
+        }
+
+        applyPassportScanResult((PassportScanContract.ScanResult.Passport) scanResult);
+    }
+
     private void changeToggle() {
         if (mIsTogleMan) {
             binding.btnTogle.setBackgroundResource(R.drawable.gl_togle_2);
@@ -251,55 +313,17 @@ public class HDTaxRefundActivity extends BaseActivity implements View.OnClickLis
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == 1001 && resultCode == RESULT_OK && data != null) {
-            //QR, 바코드 인식
-            if(data.getStringExtra("barcodeValue") != null){
-                isSensed = "2";
-                getHPointCustomInfo(data.getStringExtra("barcodeValue"));
-            }
-            // 여권인식
-            else{
-                isSensed = "1";
-                String passportNumber = data.getStringExtra("passportNumber");
-                String lastName = data.getStringExtra("lastName");
-                String firstName = data.getStringExtra("firstName");
-                String birthDate = data.getStringExtra("dateOfBirth");
-                String expiryDate = data.getStringExtra("expirationDate");
-                String nationality = data.getStringExtra("nationality");
-                String sex = data.getStringExtra("sex");
-
-                Log.d("RESULT", "여권번호=" + passportNumber +
-                        ", 이름=" + lastName + " " + firstName +
-                        ", 생년월일=" + birthDate +
-                        ", 만료일=" + expiryDate +
-                        ", 성별=" + sex +
-                        ", 국적=" + nationality);
-
-                binding.etCountry.setText(nationality);
-                binding.etPassport.setText(passportNumber);
-
-                binding.etLastNm.setText(lastName);
-                binding.etFirstNm.setText(firstName);
-
-                if(sex != null){
-                    if (sex.trim().equals("M")) {
-                        mIsTogleMan = true;
-                        strGender = "M";
-                    } else {
-                        mIsTogleMan = false;
-                        strGender = "F";
-                    }
-                    changeToggle();
-                }
-                else{
-                    showPopup("성별을 확인해주세요.");
-                }
-
-                binding.etBirth.setText(birthDate);
-                binding.etValiditty.setText(expiryDate);
-            }
-
+        if (requestCode != PassportScanContract.REQUEST_CODE || resultCode != RESULT_OK) {
+            return;
         }
+
+        PassportScanContract.ScanResult scanResult = PassportScanContract.parseResult(data);
+        if (scanResult == null) {
+            Log.w("RESULT", "스캔 결과를 파싱하지 못했습니다.");
+            return;
+        }
+
+        applyScanResult(scanResult);
     }
 
     /**
@@ -376,15 +400,9 @@ public class HDTaxRefundActivity extends BaseActivity implements View.OnClickLis
 
             // 여권인식
             case 1:
-                binding.etCountry.setText("");
-                binding.etPassport.setText("");
-                binding.etCountry.setText("");
-                binding.etLastNm.setText("");
-                binding.etFirstNm.setText("");
-                binding.etBirth.setText("");
-                binding.etValiditty.setText("");
-                Intent intent = new Intent(this, HDPassportScanActivity.class);
-                startActivityForResult(intent, 1001);
+                clearScannedPassportFields();
+                Intent intent = PassportScanContract.createIntent(this);
+                startActivityForResult(intent, PassportScanContract.REQUEST_CODE);
 
 //                if(checkLicense)
 //                    showScanner();
