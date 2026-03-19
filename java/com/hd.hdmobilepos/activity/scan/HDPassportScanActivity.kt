@@ -1294,6 +1294,83 @@ class HDPassportScanActivity : AppCompatActivity() {
         sessionStartedAtMs = 0L
     }
 
+    private fun registerCoreCandidate(passport: PassportMRZ): Boolean {
+        val key = buildString {
+            append(passport.passportNumber)
+            append('|')
+            append(passport.birthDate)
+            append('|')
+            append(passport.expiryDate)
+        }
+        val mrzText = passport.line1 + "\n" + passport.line2
+
+        if (key == "||" || passport.passportNumber.isBlank() || passport.birthDate.isBlank() || passport.expiryDate.isBlank()) {
+            clearCoreCandidateStabilization()
+            return false
+        }
+
+        if (key == lastCoreCandidateKey) {
+            lastCoreCandidateMrz = mrzText
+            coreCandidateStableCount += 1
+            mergeMrzIntoVotes(passport.line1, passport.line2)
+        } else {
+            lastCoreCandidateKey = key
+            lastCoreCandidateMrz = mrzText
+            coreCandidateStableCount = 1
+            resetCoreVotes(passport.line1, passport.line2)
+        }
+
+        return coreCandidateStableCount >= CORE_STABILIZATION_REQUIRED_FRAMES
+    }
+
+    private fun clearCoreCandidateStabilization() {
+        lastCoreCandidateKey = null
+        lastCoreCandidateMrz = null
+        coreCandidateStableCount = 0
+        coreLine1Votes = null
+        coreLine2Votes = null
+    }
+
+    private fun resetCoreVotes(line1: String, line2: String) {
+        coreLine1Votes = Array(line1.length) { linkedMapOf() }
+        coreLine2Votes = Array(line2.length) { linkedMapOf() }
+        mergeMrzIntoVotes(line1, line2)
+    }
+
+    private fun mergeMrzIntoVotes(line1: String, line2: String) {
+        val line1Votes = coreLine1Votes
+        val line2Votes = coreLine2Votes
+        if (line1Votes == null || line2Votes == null) return
+        if (line1Votes.size != line1.length || line2Votes.size != line2.length) return
+
+        line1.forEachIndexed { index, c ->
+            val bucket = line1Votes[index]
+            bucket[c] = (bucket[c] ?: 0) + 1
+        }
+        line2.forEachIndexed { index, c ->
+            val bucket = line2Votes[index]
+            bucket[c] = (bucket[c] ?: 0) + 1
+        }
+    }
+
+    private fun buildVotedCoreMrz(): String? {
+        val line1Votes = coreLine1Votes ?: return null
+        val line2Votes = coreLine2Votes ?: return null
+
+        fun pickLine(votes: Array<MutableMap<Char, Int>>): String {
+            return buildString(votes.size) {
+                votes.forEach { bucket ->
+                    val winner = bucket.entries
+                        .maxWithOrNull(compareBy<Map.Entry<Char, Int>> { it.value }.thenBy { if (it.key == '<') 1 else 0 })
+                        ?.key ?: '<'
+                    append(winner)
+                }
+            }
+        }
+
+        return pickLine(line1Votes) + "\n" + pickLine(line2Votes)
+    }
+
     /**
      * H.Point 바코드 규칙:
      * - 총 16자리 숫자
