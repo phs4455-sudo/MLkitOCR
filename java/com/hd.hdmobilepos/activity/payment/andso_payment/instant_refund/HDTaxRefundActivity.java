@@ -11,6 +11,8 @@ import android.os.Handler;
 import android.util.Log;
 import android.view.View;
 
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.camera.view.PreviewView;
 
 import com.google.mlkit.vision.text.TextRecognizer;
@@ -60,6 +62,8 @@ import java.util.Locale;
  */
 
 public class HDTaxRefundActivity extends BaseActivity implements View.OnClickListener {
+    private static final String TAG = "HDTaxRefundActivity";
+
     ActivityInstantRefundBinding binding;
     TaxRefundVanReq mTaxRefundVanReq;
     HpntPassportHostRes passportInfos;
@@ -71,6 +75,21 @@ public class HDTaxRefundActivity extends BaseActivity implements View.OnClickLis
     String errMsg = "";
     private PreviewView previewView;
     private TextRecognizer recognizer;
+    private final ActivityResultLauncher<Intent> passportScanLauncher =
+            registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
+                if (result.getResultCode() != RESULT_OK) {
+                    return;
+                }
+
+                PassportScanContract.ScanResult scanResult =
+                        PassportScanContract.parseResult(result.getData());
+                if (scanResult == null) {
+                    Log.w(TAG, "스캔 결과를 파싱하지 못했습니다.");
+                    return;
+                }
+
+                applyScanResult(scanResult);
+            });
 
     /********************************************************************************************************
      * Intent Factory
@@ -229,7 +248,7 @@ public class HDTaxRefundActivity extends BaseActivity implements View.OnClickLis
                 changeToggle();
                 return;
             default:
-                Log.w("RESULT", "지원하지 않는 성별 코드: " + normalizedSex);
+                Log.w(TAG, "지원하지 않는 성별 코드: " + normalizedSex);
                 showPopup("성별을 확인해주세요.");
         }
     }
@@ -247,7 +266,7 @@ public class HDTaxRefundActivity extends BaseActivity implements View.OnClickLis
     private void applyPassportScanResult(PassportScanContract.ScanResult.Passport passport) {
         isSensed = "1";
 
-        Log.d("RESULT", "여권 스캔 완료: nationality=" + passport.getNationality() +
+        Log.d(TAG, "여권 스캔 완료: nationality=" + passport.getNationality() +
                 ", sex=" + passport.getSex() +
                 ", passportNumberLength=" + passport.getPassportNumber().length());
 
@@ -309,22 +328,6 @@ public class HDTaxRefundActivity extends BaseActivity implements View.OnClickLis
     /********************************************************************************************************
      * Event
      *********************************************************************************************************/
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != PassportScanContract.REQUEST_CODE || resultCode != RESULT_OK) {
-            return;
-        }
-
-        PassportScanContract.ScanResult scanResult = PassportScanContract.parseResult(data);
-        if (scanResult == null) {
-            Log.w("RESULT", "스캔 결과를 파싱하지 못했습니다.");
-            return;
-        }
-
-        applyScanResult(scanResult);
-    }
 
     /**
      * numberKeyPad action
@@ -402,7 +405,7 @@ public class HDTaxRefundActivity extends BaseActivity implements View.OnClickLis
             case 1:
                 clearScannedPassportFields();
                 Intent intent = PassportScanContract.createIntent(this);
-                startActivityForResult(intent, PassportScanContract.REQUEST_CODE);
+                passportScanLauncher.launch(intent);
 
 //                if(checkLicense)
 //                    showScanner();
