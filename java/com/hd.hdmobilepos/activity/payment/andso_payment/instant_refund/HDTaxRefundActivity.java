@@ -52,6 +52,7 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Dictionary;
 import java.util.Hashtable;
+import java.util.Locale;
 
 /**
  * 기타결제 - 즉시환급
@@ -215,14 +216,59 @@ public class HDTaxRefundActivity extends BaseActivity implements View.OnClickLis
             return;
         }
 
-        if (sex.trim().equals("M")) {
-            mIsTogleMan = true;
-            strGender = "M";
-        } else {
-            mIsTogleMan = false;
-            strGender = "F";
+        String normalizedSex = sex.trim().toUpperCase(Locale.ROOT);
+        switch (normalizedSex) {
+            case "M":
+                mIsTogleMan = true;
+                strGender = "M";
+                changeToggle();
+                return;
+            case "F":
+                mIsTogleMan = false;
+                strGender = "F";
+                changeToggle();
+                return;
+            default:
+                Log.w("RESULT", "지원하지 않는 성별 코드: " + normalizedSex);
+                showPopup("성별을 확인해주세요.");
         }
-        changeToggle();
+    }
+
+    private void clearScannedPassportFields() {
+        binding.etCountry.setText("");
+        binding.etPassport.setText("");
+        binding.etCountry.setText("");
+        binding.etLastNm.setText("");
+        binding.etFirstNm.setText("");
+        binding.etBirth.setText("");
+        binding.etValiditty.setText("");
+    }
+
+    private void applyPassportScanResult(PassportScanContract.ScanResult.Passport passport) {
+        isSensed = "1";
+
+        Log.d("RESULT", "여권 스캔 완료: nationality=" + passport.getNationality() +
+                ", sex=" + passport.getSex() +
+                ", passportNumberLength=" + passport.getPassportNumber().length());
+
+        binding.etCountry.setText(passport.getNationality());
+        binding.etPassport.setText(passport.getPassportNumber());
+        binding.etLastNm.setText(passport.getLastName());
+        binding.etFirstNm.setText(passport.getFirstName());
+        binding.etBirth.setText(passport.getDateOfBirth());
+        binding.etValiditty.setText(passport.getExpirationDate());
+        applyPassportGender(passport.getSex());
+    }
+
+    private void applyScanResult(PassportScanContract.ScanResult scanResult) {
+        if (scanResult instanceof PassportScanContract.ScanResult.Barcode) {
+            PassportScanContract.ScanResult.Barcode barcode = (PassportScanContract.ScanResult.Barcode) scanResult;
+            isSensed = "2";
+            getHPointCustomInfo(barcode.getValue());
+            return;
+        }
+
+        applyPassportScanResult((PassportScanContract.ScanResult.Passport) scanResult);
     }
 
     private void changeToggle() {
@@ -277,29 +323,7 @@ public class HDTaxRefundActivity extends BaseActivity implements View.OnClickLis
             return;
         }
 
-        if (scanResult instanceof PassportScanContract.ScanResult.Barcode) {
-            PassportScanContract.ScanResult.Barcode barcode = (PassportScanContract.ScanResult.Barcode) scanResult;
-            isSensed = "2";
-            getHPointCustomInfo(barcode.getValue());
-            return;
-        }
-
-        PassportScanContract.ScanResult.Passport passport = (PassportScanContract.ScanResult.Passport) scanResult;
-        isSensed = "1";
-
-        Log.d("RESULT", "여권 스캔 완료: nationality=" + passport.getNationality() +
-                ", sex=" + passport.getSex() +
-                ", passportNumberLength=" + passport.getPassportNumber().length());
-
-        binding.etCountry.setText(passport.getNationality());
-        binding.etPassport.setText(passport.getPassportNumber());
-        binding.etLastNm.setText(passport.getLastName());
-        binding.etFirstNm.setText(passport.getFirstName());
-
-        applyPassportGender(passport.getSex());
-
-        binding.etBirth.setText(passport.getDateOfBirth());
-        binding.etValiditty.setText(passport.getExpirationDate());
+        applyScanResult(scanResult);
     }
 
     /**
@@ -376,13 +400,7 @@ public class HDTaxRefundActivity extends BaseActivity implements View.OnClickLis
 
             // 여권인식
             case 1:
-                binding.etCountry.setText("");
-                binding.etPassport.setText("");
-                binding.etCountry.setText("");
-                binding.etLastNm.setText("");
-                binding.etFirstNm.setText("");
-                binding.etBirth.setText("");
-                binding.etValiditty.setText("");
+                clearScannedPassportFields();
                 Intent intent = PassportScanContract.createIntent(this);
                 startActivityForResult(intent, PassportScanContract.REQUEST_CODE);
 
