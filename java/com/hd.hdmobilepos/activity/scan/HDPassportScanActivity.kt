@@ -206,6 +206,11 @@ class HDPassportScanActivity : AppCompatActivity() {
     private var sharpnessEma: Double = 0.0
     private var sharpnessSamples: Int = 0
     private var blurConsecutiveCount: Int = 0
+    private var sessionStartedAtMs: Long = 0L
+    private var analyzedFrameCount: Int = 0
+    private var barcodeAttemptCount: Int = 0
+    private var mrzSuccessCount: Int = 0
+    private var barcodeSuccessCount: Int = 0
 
     // 바코드 스캔은 MRZ보다 가벼운 편이지만, 매 프레임 돌리면 MRZ 인식이 체감상 느려집니다.
     private var lastBarcodeScanMs: Long = 0L
@@ -261,6 +266,7 @@ class HDPassportScanActivity : AppCompatActivity() {
         initViews()
         initMlKit()
         cameraExecutor = Executors.newSingleThreadExecutor()
+        resetSessionTelemetry()
 
         setScanningUi()
         checkCameraPermissionAndStart()
@@ -311,6 +317,8 @@ class HDPassportScanActivity : AppCompatActivity() {
         if (!cameraExecutor.isShutdown) {
             cameraExecutor.shutdownNow()
         }
+
+        emitSessionTelemetry("destroy")
     }
 
     private fun initViews() {
@@ -531,6 +539,7 @@ class HDPassportScanActivity : AppCompatActivity() {
             }
 
             stopCamera()
+            emitSessionTelemetry("timeout")
             showScanTimeoutDialog()
         }
     }
@@ -593,6 +602,26 @@ class HDPassportScanActivity : AppCompatActivity() {
         flip180Toggle = false
         mrzPriorityUntilMs = 0L
         lastSp60AutoZoomMs = 0L
+        resetSessionTelemetry()
+    }
+
+    private fun resetSessionTelemetry() {
+        sessionStartedAtMs = System.currentTimeMillis()
+        analyzedFrameCount = 0
+        barcodeAttemptCount = 0
+        mrzSuccessCount = 0
+        barcodeSuccessCount = 0
+    }
+
+    private fun emitSessionTelemetry(reason: String) {
+        if (sessionStartedAtMs <= 0L) return
+        val elapsedMs = System.currentTimeMillis() - sessionStartedAtMs
+        Log.i(
+            TAG,
+            "session telemetry: reason=$reason elapsedMs=$elapsedMs analyzedFrames=$analyzedFrameCount " +
+                "barcodeAttempts=$barcodeAttemptCount mrzSuccess=$mrzSuccessCount barcodeSuccess=$barcodeSuccessCount"
+        )
+        sessionStartedAtMs = 0L
     }
 
     private fun dismissTimeoutDialog() {
@@ -728,6 +757,7 @@ class HDPassportScanActivity : AppCompatActivity() {
             }
 
             val now = System.currentTimeMillis()
+            analyzedFrameCount++
 
             // 너무 자주/동시에 처리하지 않기(속도/발열/끊김 개선)
             if (!isAnalyzing.compareAndSet(false, true)) {
@@ -795,6 +825,7 @@ class HDPassportScanActivity : AppCompatActivity() {
 
             if (shouldScanBarcode) {
                 lastBarcodeScanMs = now
+                barcodeAttemptCount++
                 val barcodeInput = InputImage.fromMediaImage(mediaImage, baseRotation)
                 barcodeScanner.process(barcodeInput)
                     .addOnSuccessListener { barcodes ->
@@ -1104,6 +1135,7 @@ class HDPassportScanActivity : AppCompatActivity() {
         if (!isFinished.compareAndSet(false, true)) return
 
         runWhenUiAlive {
+            barcodeSuccessCount++
             mrzOverlay.setGuideColor(COLOR_SUCCESS)
             mrzOverlay.stopScanAnimation()
             vibrateSuccess()
@@ -1112,6 +1144,7 @@ class HDPassportScanActivity : AppCompatActivity() {
             stopCamera()
 
             setResult(RESULT_OK, PassportScanContract.createBarcodeResultIntent(value))
+            emitSessionTelemetry("barcode_success")
             finish()
         }
     }
@@ -1120,6 +1153,7 @@ class HDPassportScanActivity : AppCompatActivity() {
         if (!isFinished.compareAndSet(false, true)) return
 
         runWhenUiAlive {
+            mrzSuccessCount++
             mrzOverlay.setGuideColor(COLOR_SUCCESS)
             mrzOverlay.stopScanAnimation()
             vibrateSuccess()
@@ -1128,6 +1162,7 @@ class HDPassportScanActivity : AppCompatActivity() {
             stopCamera()
 
             setResult(RESULT_OK, PassportScanContract.createPassportResultIntent(passport))
+            emitSessionTelemetry("mrz_success")
             finish()
         }
     }
