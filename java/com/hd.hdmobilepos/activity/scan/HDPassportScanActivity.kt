@@ -122,6 +122,9 @@ class HDPassportScanActivity : AppCompatActivity() {
         private const val SP60_AF_KICK_INTERVAL_MS = 2500L
 
         private const val TAG = "HDPassportScan"
+
+        /** core 후보는 1프레임만으로 성공시키지 않고, 같은 핵심 필드가 연속 확인되어야 성공 */
+        private const val CORE_STABILIZATION_REQUIRED_FRAMES = 3
     }
 
     private inline fun ignoreCameraOperationError(operation: String, block: () -> Unit) {
@@ -206,6 +209,11 @@ class HDPassportScanActivity : AppCompatActivity() {
     private var sharpnessEma: Double = 0.0
     private var sharpnessSamples: Int = 0
     private var blurConsecutiveCount: Int = 0
+    private var lastCoreCandidateKey: String? = null
+    private var lastCoreCandidateMrz: String? = null
+    private var coreCandidateStableCount: Int = 0
+    private var coreLine1Votes: Array<MutableMap<Char, Int>>? = null
+    private var coreLine2Votes: Array<MutableMap<Char, Int>>? = null
 
     // 바코드 스캔은 MRZ보다 가벼운 편이지만, 매 프레임 돌리면 MRZ 인식이 체감상 느려집니다.
     private var lastBarcodeScanMs: Long = 0L
@@ -588,6 +596,11 @@ class HDPassportScanActivity : AppCompatActivity() {
         lastProcessStartMs = 0L
         lastBarcodeScanMs = 0L
         blurConsecutiveCount = 0
+        lastCoreCandidateKey = null
+        lastCoreCandidateMrz = null
+        coreCandidateStableCount = 0
+        coreLine1Votes = null
+        coreLine2Votes = null
         consecutiveMrzFails = 0
         flip180Enabled = false
         flip180Toggle = false
@@ -1035,13 +1048,37 @@ class HDPassportScanActivity : AppCompatActivity() {
                 bumpMrzPriority(nowMs)
 
                 val mrzText = candidate.line1 + "\n" + candidate.line2
+                val passport = PassportMRZ(mrzText)
 
-                // core/strict 모두 업무에 필요한 필드(여권번호/생년월일/만료일)는 충분히 신뢰할 수 있으므로
-                // 현재 구현은 즉시 성공 처리합니다. (SP60 근접 촬영에서 personal/final 영역 흔들림으로 인한 지연 방지)
-                onMrzRecognized(PassportMRZ(mrzText))
-                return MrzOutcome.SUCCESS
+                if (candidate.isStrict) {
+                    clearCoreCandidateStabilization()
+                    Log.i(
+                        TAG,
+                        "MRZ strict success: passportNo=${passport.passportNumber} birth=${passport.birthDate} expiry=${passport.expiryDate}"
+                    )
+                    onMrzRecognized(passport, isStrict = true)
+                    return MrzOutcome.SUCCESS
+                }
+
+                val stable = registerCoreCandidate(passport)
+                Log.d(
+                    TAG,
+                    "MRZ core candidate: passportNo=${passport.passportNumber} birth=${passport.birthDate} expiry=${passport.expiryDate} " +
+                        "stableCount=$coreCandidateStableCount/$CORE_STABILIZATION_REQUIRED_FRAMES"
+                )
+                if (stable) {
+                    val stablePassport = PassportMRZ(buildVotedCoreMrz() ?: (lastCoreCandidateMrz ?: mrzText))
+                    Log.i(
+                        TAG,
+                        "MRZ core stabilized: passportNo=${stablePassport.passportNumber} birth=${stablePassport.birthDate} expiry=${stablePassport.expiryDate} frames=$coreCandidateStableCount"
+                    )
+                    onMrzRecognized(stablePassport, isStrict = false)
+                    return MrzOutcome.SUCCESS
+                }
+                return MrzOutcome.PROGRESS
             }
 
+            clearCoreCandidateStabilization()
             return MrzOutcome.NONE
         }
 
@@ -1080,6 +1117,83 @@ class HDPassportScanActivity : AppCompatActivity() {
         positionDemoHintAboveGuide()
     }
 
+    private fun registerCoreCandidate(passport: PassportMRZ): Boolean {
+        val key = buildString {
+            append(passport.passportNumber)
+            append('|')
+            append(passport.birthDate)
+            append('|')
+            append(passport.expiryDate)
+        }
+        val mrzText = passport.line1 + "\n" + passport.line2
+
+        if (key == "||" || passport.passportNumber.isBlank() || passport.birthDate.isBlank() || passport.expiryDate.isBlank()) {
+            clearCoreCandidateStabilization()
+            return false
+        }
+
+        if (key == lastCoreCandidateKey) {
+            lastCoreCandidateMrz = mrzText
+            coreCandidateStableCount += 1
+            mergeMrzIntoVotes(passport.line1, passport.line2)
+        } else {
+            lastCoreCandidateKey = key
+            lastCoreCandidateMrz = mrzText
+            coreCandidateStableCount = 1
+            resetCoreVotes(passport.line1, passport.line2)
+        }
+
+        return coreCandidateStableCount >= CORE_STABILIZATION_REQUIRED_FRAMES
+    }
+
+    private fun clearCoreCandidateStabilization() {
+        lastCoreCandidateKey = null
+        lastCoreCandidateMrz = null
+        coreCandidateStableCount = 0
+        coreLine1Votes = null
+        coreLine2Votes = null
+    }
+
+    private fun resetCoreVotes(line1: String, line2: String) {
+        coreLine1Votes = Array(line1.length) { linkedMapOf() }
+        coreLine2Votes = Array(line2.length) { linkedMapOf() }
+        mergeMrzIntoVotes(line1, line2)
+    }
+
+    private fun mergeMrzIntoVotes(line1: String, line2: String) {
+        val line1Votes = coreLine1Votes
+        val line2Votes = coreLine2Votes
+        if (line1Votes == null || line2Votes == null) return
+        if (line1Votes.size != line1.length || line2Votes.size != line2.length) return
+
+        line1.forEachIndexed { index, c ->
+            val bucket = line1Votes[index]
+            bucket[c] = (bucket[c] ?: 0) + 1
+        }
+        line2.forEachIndexed { index, c ->
+            val bucket = line2Votes[index]
+            bucket[c] = (bucket[c] ?: 0) + 1
+        }
+    }
+
+    private fun buildVotedCoreMrz(): String? {
+        val line1Votes = coreLine1Votes ?: return null
+        val line2Votes = coreLine2Votes ?: return null
+
+        fun pickLine(votes: Array<MutableMap<Char, Int>>): String {
+            return buildString(votes.size) {
+                votes.forEach { bucket ->
+                    val winner = bucket.entries
+                        .maxWithOrNull(compareBy<Map.Entry<Char, Int>> { it.value }.thenBy { if (it.key == '<') 1 else 0 })
+                        ?.key ?: '<'
+                    append(winner)
+                }
+            }
+        }
+
+        return pickLine(line1Votes) + "\n" + pickLine(line2Votes)
+    }
+
     /**
      * H.Point 바코드 규칙:
      * - 총 16자리 숫자
@@ -1116,7 +1230,7 @@ class HDPassportScanActivity : AppCompatActivity() {
         }
     }
 
-    private fun onMrzRecognized(passport: PassportMRZ) {
+    private fun onMrzRecognized(passport: PassportMRZ, isStrict: Boolean) {
         if (!isFinished.compareAndSet(false, true)) return
 
         runWhenUiAlive {
@@ -1127,7 +1241,7 @@ class HDPassportScanActivity : AppCompatActivity() {
             cancelScanTimeout()
             stopCamera()
 
-            setResult(RESULT_OK, PassportScanContract.createPassportResultIntent(passport))
+            setResult(RESULT_OK, PassportScanContract.createPassportResultIntent(passport, isStrict))
             finish()
         }
     }
