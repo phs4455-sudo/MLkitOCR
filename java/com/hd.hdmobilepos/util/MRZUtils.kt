@@ -468,6 +468,62 @@ object MRZUtils {
         return score
     }
 
+    private fun scoreLine1Rough(line1: String): Int {
+        if (line1.length != LINE_LENGTH) return 0
+        if (!FIRST_LINE_PATTERN.matches(line1)) return 0
+
+        val nameField = line1.substring(5)
+        val separatorIdx = nameField.indexOf("<<")
+        if (separatorIdx < 0) return 0
+
+        var score = 0
+        score += 10 // line1 후보 생성까지 왔으면 기본 MRZ shape는 맞는 편
+
+        val fillerCount = nameField.count { it == '<' }
+        val alphaCount = nameField.count { it in 'A'..'Z' }
+        score += min(10, fillerCount)
+        if (alphaCount in 5..30) score += 4
+
+        // surname << given-name separator는 이름 필드 초중반에 있는 경우가 대부분 자연스럽습니다.
+        if (separatorIdx in 1..28) score += 6 else score -= 4
+
+        val trailingRun = trailingRunLength(nameField, '<')
+        if (trailingRun >= 4) score += min(8, trailingRun)
+
+        val suspiciousK = countSuspiciousNameFieldKs(nameField)
+        score -= suspiciousK * 5
+
+        return score
+    }
+
+    private fun scoreLine1Rough(line1: String): Int {
+        if (line1.length != LINE_LENGTH) return 0
+        if (!FIRST_LINE_PATTERN.matches(line1)) return 0
+
+        val nameField = line1.substring(5)
+        val separatorIdx = nameField.indexOf("<<")
+        if (separatorIdx < 0) return 0
+
+        var score = 0
+        score += 10 // line1 후보 생성까지 왔으면 기본 MRZ shape는 맞는 편
+
+        val fillerCount = nameField.count { it == '<' }
+        val alphaCount = nameField.count { it in 'A'..'Z' }
+        score += min(10, fillerCount)
+        if (alphaCount in 5..30) score += 4
+
+        // surname << given-name separator는 이름 필드 초중반에 있는 경우가 대부분 자연스럽습니다.
+        if (separatorIdx in 1..28) score += 6 else score -= 4
+
+        val trailingRun = trailingRunLength(nameField, '<')
+        if (trailingRun >= 4) score += min(8, trailingRun)
+
+        val suspiciousK = countSuspiciousNameFieldKs(nameField)
+        score -= suspiciousK * 5
+
+        return score
+    }
+
     // --- Normalization helpers ---
 
     private fun normalizeLine1(line: String?): String {
@@ -572,6 +628,170 @@ object MRZUtils {
             if (arr[p] == '<' || arr[p] == 'K') fillerCount++
         }
         return fillerCount >= 3
+    }
+
+    /**
+     * line1 이름 영역(5..43)에서 filler('<')가 K로 오인식된 흔적을 구조적으로 보정합니다.
+     * - 이름 토큰 내부의 실제 K(KIM, PARK)는 최대한 유지
+     * - separator/공백 filler 경계의 K(<<K, K<<, <K<, filler-run 내부)는 적극적으로 '<'로 치환
+     */
+    private fun repairNameFieldFillers(line1: String): String {
+        if (line1.length != LINE_LENGTH) return line1
+        if (!line1.contains('K')) return line1
+
+        val arr = line1.toCharArray()
+        for (i in 5 until arr.size) {
+            if (arr[i] != 'K') continue
+            if (shouldTreatNameFieldKAsFiller(arr, i)) arr[i] = '<'
+        }
+        return String(arr)
+    }
+
+    private fun shouldTreatNameFieldKAsFiller(arr: CharArray, idx: Int): Boolean {
+        val prev = charAtOrFiller(arr, idx - 1)
+        val next = charAtOrFiller(arr, idx + 1)
+        val prev2 = charAtOrFiller(arr, idx - 2)
+        val next2 = charAtOrFiller(arr, idx + 2)
+
+        val leftIsLetter = prev in 'A'..'Z' && prev != '<'
+        val rightIsLetter = next in 'A'..'Z' && next != '<'
+
+        // 실제 이름 토큰 내부의 K(KIM, PARK 등)는 살립니다.
+        if (leftIsLetter && rightIsLetter) return false
+
+        val immediateFiller = prev == '<' || next == '<'
+        val nearFiller = prev2 == '<' || next2 == '<'
+        val strongFillerRun = countNearbyFillers(arr, idx, radius = 3) >= 3
+
+        if ((prev == '<' && next == '<') || (immediateFiller && nearFiller)) return true
+        if (strongFillerRun && (!leftIsLetter || !rightIsLetter)) return true
+
+        // trailing filler 구간에 한 글자만 튀는 패턴(<<<<K<<<<) 보정
+        if (!leftIsLetter && !rightIsLetter && (prev2 == '<' || next2 == '<')) return true
+
+        return false
+    }
+
+    private fun charAtOrFiller(arr: CharArray, idx: Int): Char =
+        if (idx in arr.indices) arr[idx] else '<'
+
+    private fun countNearbyFillers(arr: CharArray, idx: Int, radius: Int): Int {
+        var count = 0
+        for (offset in -radius..radius) {
+            if (offset == 0) continue
+            val p = idx + offset
+            if (p !in arr.indices || arr[p] == '<') count++
+        }
+        return count
+    }
+
+    private fun countSuspiciousNameFieldKs(nameField: String): Int {
+        var suspicious = 0
+        for (i in nameField.indices) {
+            if (nameField[i] != 'K') continue
+            val prev = if (i > 0) nameField[i - 1] else '<'
+            val next = if (i < nameField.lastIndex) nameField[i + 1] else '<'
+            val prev2 = if (i > 1) nameField[i - 2] else '<'
+            val next2 = if (i < nameField.lastIndex - 1) nameField[i + 2] else '<'
+            val leftLetter = prev in 'A'..'Z' && prev != '<'
+            val rightLetter = next in 'A'..'Z' && next != '<'
+            if (leftLetter && rightLetter) continue
+            if ((prev == '<' && next == '<') || ((prev == '<' || next == '<') && (prev2 == '<' || next2 == '<'))) {
+                suspicious++
+            }
+        }
+        return suspicious
+    }
+
+    private fun trailingRunLength(value: String, ch: Char): Int {
+        var count = 0
+        for (i in value.lastIndex downTo 0) {
+            if (value[i] != ch) break
+            count++
+        }
+        return count
+    }
+
+    /**
+     * line1 이름 영역(5..43)에서 filler('<')가 K로 오인식된 흔적을 구조적으로 보정합니다.
+     * - 이름 토큰 내부의 실제 K(KIM, PARK)는 최대한 유지
+     * - separator/공백 filler 경계의 K(<<K, K<<, <K<, filler-run 내부)는 적극적으로 '<'로 치환
+     */
+    private fun repairNameFieldFillers(line1: String): String {
+        if (line1.length != LINE_LENGTH) return line1
+        if (!line1.contains('K')) return line1
+
+        val arr = line1.toCharArray()
+        for (i in 5 until arr.size) {
+            if (arr[i] != 'K') continue
+            if (shouldTreatNameFieldKAsFiller(arr, i)) arr[i] = '<'
+        }
+        return String(arr)
+    }
+
+    private fun shouldTreatNameFieldKAsFiller(arr: CharArray, idx: Int): Boolean {
+        val prev = charAtOrFiller(arr, idx - 1)
+        val next = charAtOrFiller(arr, idx + 1)
+        val prev2 = charAtOrFiller(arr, idx - 2)
+        val next2 = charAtOrFiller(arr, idx + 2)
+
+        val leftIsLetter = prev in 'A'..'Z' && prev != '<'
+        val rightIsLetter = next in 'A'..'Z' && next != '<'
+
+        // 실제 이름 토큰 내부의 K(KIM, PARK 등)는 살립니다.
+        if (leftIsLetter && rightIsLetter) return false
+
+        val immediateFiller = prev == '<' || next == '<'
+        val nearFiller = prev2 == '<' || next2 == '<'
+        val strongFillerRun = countNearbyFillers(arr, idx, radius = 3) >= 3
+
+        if ((prev == '<' && next == '<') || (immediateFiller && nearFiller)) return true
+        if (strongFillerRun && (!leftIsLetter || !rightIsLetter)) return true
+
+        // trailing filler 구간에 한 글자만 튀는 패턴(<<<<K<<<<) 보정
+        if (!leftIsLetter && !rightIsLetter && (prev2 == '<' || next2 == '<')) return true
+
+        return false
+    }
+
+    private fun charAtOrFiller(arr: CharArray, idx: Int): Char =
+        if (idx in arr.indices) arr[idx] else '<'
+
+    private fun countNearbyFillers(arr: CharArray, idx: Int, radius: Int): Int {
+        var count = 0
+        for (offset in -radius..radius) {
+            if (offset == 0) continue
+            val p = idx + offset
+            if (p !in arr.indices || arr[p] == '<') count++
+        }
+        return count
+    }
+
+    private fun countSuspiciousNameFieldKs(nameField: String): Int {
+        var suspicious = 0
+        for (i in nameField.indices) {
+            if (nameField[i] != 'K') continue
+            val prev = if (i > 0) nameField[i - 1] else '<'
+            val next = if (i < nameField.lastIndex) nameField[i + 1] else '<'
+            val prev2 = if (i > 1) nameField[i - 2] else '<'
+            val next2 = if (i < nameField.lastIndex - 1) nameField[i + 2] else '<'
+            val leftLetter = prev in 'A'..'Z' && prev != '<'
+            val rightLetter = next in 'A'..'Z' && next != '<'
+            if (leftLetter && rightLetter) continue
+            if ((prev == '<' && next == '<') || ((prev == '<' || next == '<') && (prev2 == '<' || next2 == '<'))) {
+                suspicious++
+            }
+        }
+        return suspicious
+    }
+
+    private fun trailingRunLength(value: String, ch: Char): Int {
+        var count = 0
+        for (i in value.lastIndex downTo 0) {
+            if (value[i] != ch) break
+            count++
+        }
+        return count
     }
 
     /**
