@@ -328,12 +328,17 @@ object MRZUtils {
             for (i in 0..maxStart) {
                 if (s[i] != 'P') continue
                 val sub = s.substring(i, i + LINE_LENGTH)
-                val cand = normalizeLine1(sub)
+                val candidates = buildLine1Variants(sub)
 
-                // 이름 구간(5..)에 '<<' 패턴이 없으면 MRZ 1행일 가능성이 낮습니다.
-                if (!cand.substring(5).contains("<<")) continue
+                for (cand in candidates) {
+                    // 이름 구간(5..)에 '<<' 패턴이 없으면 MRZ 1행일 가능성이 낮습니다.
+                    if (!cand.substring(5).contains("<<")) continue
 
-                if (FIRST_LINE_PATTERN.matches(cand)) out.add(cand)
+                    if (FIRST_LINE_PATTERN.matches(cand)) {
+                        out.add(cand)
+                        if (out.size >= 6) break
+                    }
+                }
                 if (out.size >= 6) break
             }
             out.toList()
@@ -376,6 +381,46 @@ object MRZUtils {
                 .map { it.line }
                 .distinct()
         }
+    }
+
+
+    private fun buildLine1Variants(raw44: String): List<String> {
+        val normalized = normalizeLine1(raw44)
+        val out = linkedSetOf(normalized)
+
+        // OCR에서 이름 구분용 filler("<<")의 일부가 K로 들어오면 line1 후보 자체를 놓칠 수 있습니다.
+        // 원본 후보가 이미 유효하면 그대로 우선 사용하고,
+        // name field(5..)에서만 제한적으로 K→< 치환 variant를 추가해 separator 복구를 시도합니다.
+        val nameStart = 5
+        val suspicious = mutableListOf<Int>()
+        for (i in nameStart until normalized.length) {
+            if (normalized[i] != 'K') continue
+            val prev = if (i > nameStart) normalized[i - 1] else '<'
+            val next = if (i < normalized.lastIndex) normalized[i + 1] else '<'
+            if (prev == '<' || next == '<') suspicious.add(i)
+        }
+
+        if (suspicious.isEmpty()) return out.toList()
+
+        suspicious.forEach { idx ->
+            val arr = normalized.toCharArray()
+            arr[idx] = '<'
+            out.add(sanitizeTrailingFiller(String(arr)))
+        }
+
+        if (suspicious.size >= 2) {
+            for (a in 0 until suspicious.lastIndex) {
+                for (b in a + 1 until suspicious.size) {
+                    val arr = normalized.toCharArray()
+                    arr[suspicious[a]] = '<'
+                    arr[suspicious[b]] = '<'
+                    out.add(sanitizeTrailingFiller(String(arr)))
+                    if (out.size >= 6) return out.toList()
+                }
+            }
+        }
+
+        return out.toList()
     }
 
     private fun looksLikeLine2Quick(raw44: String): Boolean {
