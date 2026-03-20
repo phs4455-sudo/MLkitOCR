@@ -323,7 +323,8 @@ object MRZUtils {
         return if (isLine1) {
             // line1은 'P'로 시작하는 모든 위치에서 44자 후보를 만들고 regex로 필터링합니다.
             // (P<, PM, P0 등 다양한 문서코드 2번째 문자를 허용)
-            val out = LinkedHashSet<String>()
+            data class Scored(val line: String, val score: Int)
+            val top = ArrayList<Scored>(8)
 
             for (i in 0..maxStart) {
                 if (s[i] != 'P') continue
@@ -333,10 +334,33 @@ object MRZUtils {
                 // 이름 구간(5..)에 '<<' 패턴이 없으면 MRZ 1행일 가능성이 낮습니다.
                 if (!cand.substring(5).contains("<<")) continue
 
-                if (FIRST_LINE_PATTERN.matches(cand)) out.add(cand)
-                if (out.size >= 6) break
+                if (!FIRST_LINE_PATTERN.matches(cand)) continue
+
+                val rough = scoreLine1Rough(cand)
+                if (rough < 10) continue
+
+                if (top.size < 8) {
+                    top.add(Scored(cand, rough))
+                    continue
+                }
+
+                var minIdx = 0
+                var minScore = top[0].score
+                for (k in 1 until top.size) {
+                    if (top[k].score < minScore) {
+                        minScore = top[k].score
+                        minIdx = k
+                    }
+                }
+                if (rough > minScore) {
+                    top[minIdx] = Scored(cand, rough)
+                }
             }
-            out.toList()
+
+            top
+                .sortedByDescending { it.score }
+                .map { it.line }
+                .distinct()
         } else {
             // line2는 숫자 비중이 높으므로 rough score로 상위 후보만 선택
             data class Scored(val line: String, val score: Int)
@@ -414,6 +438,34 @@ object MRZUtils {
         // 생년월일/만료일 영역(YYMMDD) 숫자 가산점
         for (i in 13..18) if (line2[i] in '0'..'9') score += 1 else score -= 1
         for (i in 21..26) if (line2[i] in '0'..'9') score += 1 else score -= 1
+
+        return score
+    }
+
+    private fun scoreLine1Rough(line1: String): Int {
+        if (line1.length != LINE_LENGTH) return 0
+        if (!FIRST_LINE_PATTERN.matches(line1)) return 0
+
+        val nameField = line1.substring(5)
+        val separatorIdx = nameField.indexOf("<<")
+        if (separatorIdx < 0) return 0
+
+        var score = 0
+        score += 10 // line1 후보 생성까지 왔으면 기본 MRZ shape는 맞는 편
+
+        val fillerCount = nameField.count { it == '<' }
+        val alphaCount = nameField.count { it in 'A'..'Z' }
+        score += min(10, fillerCount)
+        if (alphaCount in 5..30) score += 4
+
+        // surname << given-name separator는 이름 필드 초중반에 있는 경우가 대부분 자연스럽습니다.
+        if (separatorIdx in 1..28) score += 6 else score -= 4
+
+        val trailingRun = trailingRunLength(nameField, '<')
+        if (trailingRun >= 4) score += min(8, trailingRun)
+
+        val suspiciousK = countSuspiciousNameFieldKs(nameField)
+        score -= suspiciousK * 5
 
         return score
     }
@@ -575,6 +627,33 @@ object MRZUtils {
             if (offset == 0) continue
             val p = idx + offset
             if (p !in arr.indices || arr[p] == '<') count++
+        }
+        return count
+    }
+
+    private fun countSuspiciousNameFieldKs(nameField: String): Int {
+        var suspicious = 0
+        for (i in nameField.indices) {
+            if (nameField[i] != 'K') continue
+            val prev = if (i > 0) nameField[i - 1] else '<'
+            val next = if (i < nameField.lastIndex) nameField[i + 1] else '<'
+            val prev2 = if (i > 1) nameField[i - 2] else '<'
+            val next2 = if (i < nameField.lastIndex - 1) nameField[i + 2] else '<'
+            val leftLetter = prev in 'A'..'Z' && prev != '<'
+            val rightLetter = next in 'A'..'Z' && next != '<'
+            if (leftLetter && rightLetter) continue
+            if ((prev == '<' && next == '<') || ((prev == '<' || next == '<') && (prev2 == '<' || next2 == '<'))) {
+                suspicious++
+            }
+        }
+        return suspicious
+    }
+
+    private fun trailingRunLength(value: String, ch: Char): Int {
+        var count = 0
+        for (i in value.lastIndex downTo 0) {
+            if (value[i] != ch) break
+            count++
         }
         return count
     }
