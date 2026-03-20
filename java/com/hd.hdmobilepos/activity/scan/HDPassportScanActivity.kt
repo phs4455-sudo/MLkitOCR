@@ -1196,18 +1196,43 @@ class HDPassportScanActivity : AppCompatActivity() {
         val line1Votes = coreLine1Votes ?: return null
         val line2Votes = coreLine2Votes ?: return null
 
-        fun pickLine(votes: Array<MutableMap<Char, Int>>): String {
+        fun pickLine(votes: Array<MutableMap<Char, Int>>, lineIndex: Int): String {
             return buildString(votes.size) {
-                votes.forEach { bucket ->
+                votes.forEachIndexed { charIndex, bucket ->
                     val winner = bucket.entries
-                        .maxWithOrNull(compareBy<Map.Entry<Char, Int>> { it.value }.thenBy { if (it.key == '<') 1 else 0 })
+                        .maxWithOrNull(
+                            compareBy<Map.Entry<Char, Int>> {
+                                weightedVoteScore(it.key, it.value, lineIndex, charIndex, bucket)
+                            }.thenBy { if (it.key == '<') 1 else 0 }
+                        )
                         ?.key ?: '<'
                     append(winner)
                 }
             }
         }
 
-        return pickLine(line1Votes) + "\n" + pickLine(line2Votes)
+        return pickLine(line1Votes, 1) + "\n" + pickLine(line2Votes, 2)
+    }
+
+    private fun weightedVoteScore(
+        candidate: Char,
+        count: Int,
+        lineIndex: Int,
+        charIndex: Int,
+        bucket: MutableMap<Char, Int>
+    ): Double {
+        var score = count.toDouble()
+
+        // line1 이름 영역은 filler('<')가 실제 문자보다 더 자주 등장하므로,
+        // 같은 득표수라면 '<'에 약한 prior를 주고, '<'와 경쟁 중인 K는 조금 불리하게 둡니다.
+        if (lineIndex == 1 && charIndex >= 5) {
+            val angleVotes = bucket['<'] ?: 0
+            val kVotes = bucket['K'] ?: 0
+            if (candidate == '<' && (angleVotes + kVotes) > 0) score += 0.35
+            if (candidate == 'K' && angleVotes > 0) score -= 0.2
+        }
+
+        return score
     }
 
     /**

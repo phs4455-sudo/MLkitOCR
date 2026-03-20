@@ -440,6 +440,7 @@ object MRZUtils {
 
         var fixed = fixKAsAngle(String(arr))
         fixed = repairCountryCodeRegion(fixed, 2)
+        fixed = repairNameFieldFillers(fixed)
         return sanitizeTrailingFiller(fixed)
     }
 
@@ -521,6 +522,61 @@ object MRZUtils {
             if (arr[p] == '<' || arr[p] == 'K') fillerCount++
         }
         return fillerCount >= 3
+    }
+
+    /**
+     * line1 이름 영역(5..43)에서 filler('<')가 K로 오인식된 흔적을 구조적으로 보정합니다.
+     * - 이름 토큰 내부의 실제 K(KIM, PARK)는 최대한 유지
+     * - separator/공백 filler 경계의 K(<<K, K<<, <K<, filler-run 내부)는 적극적으로 '<'로 치환
+     */
+    private fun repairNameFieldFillers(line1: String): String {
+        if (line1.length != LINE_LENGTH) return line1
+        if (!line1.contains('K')) return line1
+
+        val arr = line1.toCharArray()
+        for (i in 5 until arr.size) {
+            if (arr[i] != 'K') continue
+            if (shouldTreatNameFieldKAsFiller(arr, i)) arr[i] = '<'
+        }
+        return String(arr)
+    }
+
+    private fun shouldTreatNameFieldKAsFiller(arr: CharArray, idx: Int): Boolean {
+        val prev = charAtOrFiller(arr, idx - 1)
+        val next = charAtOrFiller(arr, idx + 1)
+        val prev2 = charAtOrFiller(arr, idx - 2)
+        val next2 = charAtOrFiller(arr, idx + 2)
+
+        val leftIsLetter = prev in 'A'..'Z' && prev != '<'
+        val rightIsLetter = next in 'A'..'Z' && next != '<'
+
+        // 실제 이름 토큰 내부의 K(KIM, PARK 등)는 살립니다.
+        if (leftIsLetter && rightIsLetter) return false
+
+        val immediateFiller = prev == '<' || next == '<'
+        val nearFiller = prev2 == '<' || next2 == '<'
+        val strongFillerRun = countNearbyFillers(arr, idx, radius = 3) >= 3
+
+        if ((prev == '<' && next == '<') || (immediateFiller && nearFiller)) return true
+        if (strongFillerRun && (!leftIsLetter || !rightIsLetter)) return true
+
+        // trailing filler 구간에 한 글자만 튀는 패턴(<<<<K<<<<) 보정
+        if (!leftIsLetter && !rightIsLetter && (prev2 == '<' || next2 == '<')) return true
+
+        return false
+    }
+
+    private fun charAtOrFiller(arr: CharArray, idx: Int): Char =
+        if (idx in arr.indices) arr[idx] else '<'
+
+    private fun countNearbyFillers(arr: CharArray, idx: Int, radius: Int): Int {
+        var count = 0
+        for (offset in -radius..radius) {
+            if (offset == 0) continue
+            val p = idx + offset
+            if (p !in arr.indices || arr[p] == '<') count++
+        }
+        return count
     }
 
     /**
