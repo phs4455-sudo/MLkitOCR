@@ -1,5 +1,7 @@
 package com.hd.hdmobilepos.model
 
+import com.hd.hdmobilepos.util.MRZUtils
+
 /**
  * 여권 MRZ(TD3, 2줄 44자) 파서.
  *
@@ -44,8 +46,8 @@ class PassportMRZ(mrz: String) {
     init {
         val lines = mrz.split("\n")
         if (lines.size >= 2) {
-            line1 = lines[0]
-            line2 = lines[1]
+            line1 = MRZUtils.normalizeMrzChars(lines[0], true)
+            line2 = MRZUtils.normalizeMrzChars(lines[1], false)
             parseMRZ()
         } else {
             line1 = ""
