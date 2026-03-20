@@ -4,8 +4,8 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.ImageFormat
 import android.graphics.Color
+import android.graphics.ImageFormat
 import android.graphics.Rect
 import android.graphics.RectF
 import android.hardware.camera2.CameraCharacteristics
@@ -13,6 +13,7 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.os.Build
 import android.os.Bundle
+import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.util.Log
@@ -84,6 +85,7 @@ class HDPassportScanActivity : AppCompatActivity() {
 
         /** UI 안내 문구 업데이트 간격(너무 자주 바뀌면 정신없음) */
         private const val RETRY_INTERVAL_MS = 700L
+        private const val PROGRESS_UI_INTERVAL_MS = 450L
 
         /** 프레임 분석(MLKit) 최소 간격 - PDA에서 체감 속도/발열 균형용 */
         // 기존 소스 대비 체감이 느려졌다는 피드백이 있어, 기본 간격을 조금 더 공격적으로 잡습니다.
@@ -125,6 +127,7 @@ class HDPassportScanActivity : AppCompatActivity() {
 
         /** core 후보는 1프레임만으로 성공시키지 않고, 같은 핵심 필드가 연속 확인되어야 성공 */
         private const val CORE_STABILIZATION_REQUIRED_FRAMES = 3
+
     }
 
     private inline fun ignoreCameraOperationError(operation: String, block: () -> Unit) {
@@ -194,6 +197,7 @@ class HDPassportScanActivity : AppCompatActivity() {
 
     private val isFinished = AtomicBoolean(false)
     private val isAnalyzing = AtomicBoolean(false)
+    private val pendingMainThreadFocus = AtomicBoolean(false)
     @Volatile
     private var isUiAlive: Boolean = false
 
@@ -297,6 +301,7 @@ class HDPassportScanActivity : AppCompatActivity() {
 
     override fun onPause() {
         isUiAlive = false
+        pendingMainThreadFocus.set(false)
         super.onPause()
         cancelScanTimeout()
         stopDemoHintCarousel()
@@ -307,6 +312,7 @@ class HDPassportScanActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         isUiAlive = false
+        pendingMainThreadFocus.set(false)
         super.onDestroy()
         cancelScanTimeout()
         stopDemoHintCarousel()
@@ -591,6 +597,7 @@ class HDPassportScanActivity : AppCompatActivity() {
     private fun resetScannerSessionState() {
         isFinished.set(false)
         isAnalyzing.set(false)
+        pendingMainThreadFocus.set(false)
         lastUiFeedbackTimeMs = 0L
         lastProgressUiMs = 0L
         lastProcessStartMs = 0L
@@ -614,6 +621,16 @@ class HDPassportScanActivity : AppCompatActivity() {
     }
 
     private fun startFocusAt(x: Float, y: Float, autoCancelSeconds: Long = 2L) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            if (this::previewView.isInitialized && pendingMainThreadFocus.compareAndSet(false, true)) {
+                previewView.post {
+                    pendingMainThreadFocus.set(false)
+                    startFocusAt(x, y, autoCancelSeconds)
+                }
+            }
+            return
+        }
+
         val cam = camera ?: return
         val meteringPoint = previewView.meteringPointFactory.createPoint(x, y)
 
@@ -1075,6 +1092,7 @@ class HDPassportScanActivity : AppCompatActivity() {
                     onMrzRecognized(stablePassport, isStrict = false)
                     return MrzOutcome.SUCCESS
                 }
+                showCheckDigitProgressUi(coreCandidateStableCount)
                 return MrzOutcome.PROGRESS
             }
 
@@ -1323,6 +1341,26 @@ class HDPassportScanActivity : AppCompatActivity() {
             mrzOverlay.postDelayed({
                 if (shouldHandleAsyncCallback()) mrzOverlay.setGuideColor(COLOR_SCANNING)
             }, 220)
+        }
+    }
+
+    private fun showCheckDigitProgressUi(stableCount: Int) {
+        if (!shouldHandleAsyncCallback()) return
+
+        val now = System.currentTimeMillis()
+        if (now - lastProgressUiMs < PROGRESS_UI_INTERVAL_MS) return
+        lastProgressUiMs = now
+
+        val progressText = if (stableCount > 0) {
+            "MRZ는 읽혔지만 체크디지트 확인 중입니다. 잠시만 그대로 유지해주세요 (${stableCount.coerceAtMost(CORE_STABILIZATION_REQUIRED_FRAMES)}/$CORE_STABILIZATION_REQUIRED_FRAMES)"
+        } else {
+            "MRZ는 읽혔지만 체크디지트 확인 중입니다. 잠시만 그대로 유지해주세요"
+        }
+
+        runWhenUiAlive {
+            mrzOverlay.setGuideColor(COLOR_SCANNING)
+            tvHint.text = progressText
+            tvSubHint.text = "※ 숫자/기호가 선명하면 자동으로 완료됩니다."
         }
     }
 
