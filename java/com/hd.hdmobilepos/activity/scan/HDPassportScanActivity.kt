@@ -213,7 +213,6 @@ class HDPassportScanActivity : AppCompatActivity() {
     private var sharpnessSamples: Int = 0
     private var blurConsecutiveCount: Int = 0
     private var lastCoreCandidateKey: String? = null
-    private var lastCoreCandidateLine1Mask: String? = null
     private var lastCoreCandidateMrz: String? = null
     private var coreCandidateStableCount: Int = 0
     private var coreLine1Votes: Array<MutableMap<Char, Int>>? = null
@@ -1142,7 +1141,6 @@ class HDPassportScanActivity : AppCompatActivity() {
             append('|')
             append(passport.expiryDate)
         }
-        val line1Mask = buildLine1StructureMask(passport.line1)
         val mrzText = passport.line1 + "\n" + passport.line2
 
         if (key == "||" || passport.passportNumber.isBlank() || passport.birthDate.isBlank() || passport.expiryDate.isBlank()) {
@@ -1150,14 +1148,12 @@ class HDPassportScanActivity : AppCompatActivity() {
             return false
         }
 
-        if (key == lastCoreCandidateKey && isLine1StructureConsistent(line1Mask, lastCoreCandidateLine1Mask)) {
-            lastCoreCandidateLine1Mask = line1Mask
+        if (key == lastCoreCandidateKey) {
             lastCoreCandidateMrz = mrzText
             coreCandidateStableCount += 1
             mergeMrzIntoVotes(passport.line1, passport.line2)
         } else {
             lastCoreCandidateKey = key
-            lastCoreCandidateLine1Mask = line1Mask
             lastCoreCandidateMrz = mrzText
             coreCandidateStableCount = 1
             resetCoreVotes(passport.line1, passport.line2)
@@ -1168,34 +1164,10 @@ class HDPassportScanActivity : AppCompatActivity() {
 
     private fun clearCoreCandidateStabilization() {
         lastCoreCandidateKey = null
-        lastCoreCandidateLine1Mask = null
         lastCoreCandidateMrz = null
         coreCandidateStableCount = 0
         coreLine1Votes = null
         coreLine2Votes = null
-    }
-
-    private fun buildLine1StructureMask(line1: String): String {
-        if (line1.length <= 5) return ""
-        val nameField = line1.substring(5)
-        return buildString(nameField.length) {
-            nameField.forEach { c ->
-                append(if (c == '<') '<' else 'A')
-            }
-        }
-    }
-
-    private fun isLine1StructureConsistent(current: String, previous: String?): Boolean {
-        if (previous.isNullOrEmpty()) return true
-        if (current.length != previous.length) return false
-
-        var matches = 0
-        for (i in current.indices) {
-            if (current[i] == previous[i]) matches++
-        }
-
-        val similarity = matches.toDouble() / current.length.toDouble()
-        return similarity >= 0.85
     }
 
     private fun resetCoreVotes(line1: String, line2: String) {
