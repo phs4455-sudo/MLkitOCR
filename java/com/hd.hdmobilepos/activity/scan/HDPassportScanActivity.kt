@@ -21,6 +21,8 @@ import android.util.Size
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
+import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.TextView
@@ -267,6 +269,7 @@ class HDPassportScanActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         isUiAlive = true
+        enterScanImmersiveMode()
         setContentView(R.layout.activity_passport_scanner)
 
         initViews()
@@ -280,6 +283,7 @@ class HDPassportScanActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         isUiAlive = true
+        enterScanImmersiveMode()
         mrzOverlay.post {
             mrzOverlay.startScanAnimation()
             positionDemoHintAboveGuide()
@@ -323,6 +327,38 @@ class HDPassportScanActivity : AppCompatActivity() {
 
         if (!cameraExecutor.isShutdown) {
             cameraExecutor.shutdownNow()
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            enterScanImmersiveMode()
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        enterScanImmersiveMode()
+    }
+
+    private fun enterScanImmersiveMode() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false)
+            window.insetsController?.let { controller ->
+                controller.hide(WindowInsets.Type.navigationBars() or WindowInsets.Type.statusBars())
+                controller.systemBarsBehavior =
+                    WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility =
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
         }
     }
 
