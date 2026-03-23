@@ -77,8 +77,6 @@ public class HDTaxRefundActivity extends BaseActivity implements View.OnClickLis
     private TextRecognizer recognizer;
     private final ActivityResultLauncher<Intent> passportScanLauncher =
             registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
-                setBottomBarEnabledForScan(false);
-
                 if (result.getResultCode() != RESULT_OK) {
                     return;
                 }
@@ -327,12 +325,6 @@ public class HDTaxRefundActivity extends BaseActivity implements View.OnClickLis
         }
     }
 
-    private void setBottomBarEnabledForScan(boolean isScanning) {
-        setEnableBottomBar(0, !isScanning);
-        setEnableBottomBar(1, !isScanning && !binding.totPrice.getText().equals("0"));
-        setEnableBottomBar(2, !isScanning);
-    }
-
     /********************************************************************************************************
      * Event
      *********************************************************************************************************/
@@ -411,7 +403,6 @@ public class HDTaxRefundActivity extends BaseActivity implements View.OnClickLis
 
             // 여권인식
             case 1:
-                setBottomBarEnabledForScan(true);
                 clearScannedPassportFields();
                 Intent intent = PassportScanContract.createIntent(this);
                 passportScanLauncher.launch(intent);
