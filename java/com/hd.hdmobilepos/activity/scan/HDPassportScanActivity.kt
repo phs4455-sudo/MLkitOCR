@@ -80,8 +80,8 @@ class HDPassportScanActivity : AppCompatActivity() {
 
     companion object {
         private val COLOR_SCANNING = Color.WHITE
-        private val COLOR_SUCCESS = Color.parseColor("#2ECC71")
-        private val COLOR_ERROR = Color.parseColor("#FF3B30")
+        private val COLOR_SUCCESS = Color.parseColor("#00C853") // 포인트 컬러보다 밝은 그린으로 성공 강조
+        private val COLOR_ERROR = Color.parseColor("#FF5252")   // 에러 컬러 최적화
 
         /** UI 안내 문구 업데이트 간격(너무 자주 바뀌면 정신없음) */
         private const val RETRY_INTERVAL_MS = 700L
@@ -1363,7 +1363,7 @@ class HDPassportScanActivity : AppCompatActivity() {
 
             mrzOverlay.postDelayed({
                 if (shouldHandleAsyncCallback()) mrzOverlay.setGuideColor(COLOR_SCANNING)
-            }, 220)
+            }, 350)
         }
     }
 
@@ -1394,14 +1394,17 @@ class HDPassportScanActivity : AppCompatActivity() {
 
         val widthRatio = if (isSp60) 0.99f else 0.98f
         val heightRatio = if (isSp60) {
-            if (targetAspectRatio == AspectRatio.RATIO_4_3) 0.38f else 0.34f
+            // 기존 0.38 / 0.34 에서 1.2배 확대
+            if (targetAspectRatio == AspectRatio.RATIO_4_3) 0.456f else 0.408f
         } else {
-            if (targetAspectRatio == AspectRatio.RATIO_4_3) 0.30f else 0.26f
+            // 기존 0.30 / 0.26 에서 1.2배 확대
+            if (targetAspectRatio == AspectRatio.RATIO_4_3) 0.36f else 0.312f
         }
         val centerYRatio = if (isTall) {
-            if (isSp60) 0.80f else 0.78f
+            // 박스가 상단 방향으로 커지도록 중심점을 위로 이동 (기존 대비 -0.1 * heightRatio 정도 이동)
+            if (isSp60) 0.76f else 0.74f
         } else {
-            0.74f
+            0.71f
         }
         mrzOverlay.setGuideRatios(widthRatio, heightRatio, centerYRatio)
 
@@ -1570,16 +1573,17 @@ class HDPassportScanActivity : AppCompatActivity() {
 
         val (resId, title, subtitle) = when (type) {
             DemoHintType.MRZ -> Triple(
-                R.drawable.demo_passport_mrz,
-                "여권 MRZ코드를 박스에 맞춰주세요",
-                "여권을 평평하게 두고 하단을 박스에 맞추면 인식이 빨라요"
+                R.drawable.ic_illus_passport_mrz,
+                "여권 MRZ 스캔",
+                "여권 하단 2줄을 강조된 영역에 맞춰주세요"
             )
             DemoHintType.HPOINT -> Triple(
                 R.drawable.demo_phone_barcode,
-                "H.Point 바코드를 박스에 맞춰주세요",
-                "앱 화면의 바코드가 흔들리지 않게 맞춰주세요"
+                "H.Point 바코드 스캔",
+                "바코드를 박스 중앙에 밝게 맞춰주세요"
             )
         }
+
 
         demoHintContainer.visibility = View.VISIBLE
 
@@ -1605,25 +1609,8 @@ class HDPassportScanActivity : AppCompatActivity() {
     }
 
     private fun positionDemoHintAboveGuide() {
-        if (!this::demoHintContainer.isInitialized) return
-
-        val guide = mrzOverlay.guideRect
-        if (guide.width() <= 0f || guide.height() <= 0f) return
-
-        if (demoHintContainer.height == 0) {
-            demoHintContainer.post { positionDemoHintAboveGuide() }
-            return
-        }
-
-        // SP60 화면에서 크롭 박스와 가이드 카드 사이 간격을 조금 더 확보(=카드를 더 위로 올림)
-        val margin = dpToPx(80f)
-        val desiredTop = guide.top - demoHintContainer.height - margin
-        val minTop = topBar.bottom.toFloat() + dpToPx(6f)
-
-        val top = max(minTop, desiredTop)
-
-        // parent 좌표 기준으로 배치(translation 포함)
-        demoHintContainer.y = top
+        // XML의 Constraints(app:layout_constraintTop_toBottomOf="@id/topBar")에 의해 상단에 고정되므로
+        // 더 이상 동적으로 위치를 계산하지 않습니다.
     }
 
 

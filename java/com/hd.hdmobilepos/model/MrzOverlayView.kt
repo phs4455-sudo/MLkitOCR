@@ -36,6 +36,20 @@ class MrzOverlayView @JvmOverloads constructor(
         style = Paint.Style.STROKE
         strokeWidth = dp(3f)
         color = DEFAULT_GUIDE_COLOR
+        strokeCap = Paint.Cap.ROUND
+    }
+
+    private val mrzGuidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.WHITE
+        alpha = 15 // 더 은은하게
+    }
+
+    private val mrzLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dp(1f)
+        color = Color.WHITE
+        alpha = 40
     }
 
     private val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -44,10 +58,14 @@ class MrzOverlayView @JvmOverloads constructor(
     }
 
     private val scanLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = dp(2f)
+        style = Paint.Style.FILL
         color = DEFAULT_GUIDE_COLOR
-        alpha = 160
+    }
+
+    private val scanLineGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = DEFAULT_GUIDE_COLOR
+        alpha = 60
     }
 
     // --- Demo animation (MRZ / Barcode hint) ---
@@ -196,18 +214,103 @@ class MrzOverlayView @JvmOverloads constructor(
         // 1) 반투명 마스크 + cutout
         canvas.drawPath(maskPath, maskPaint)
 
-        // 2) 가이드 박스
-        canvas.drawRoundRect(guideRectInternal, cornerRadiusPx, cornerRadiusPx, boxPaint)
+        // 2) 가이드 박스 모서리 브래킷 (전체 테두리 대신 모서리 강조)
+        drawCornerBrackets(canvas)
 
-        // 3) 스캔 라인(선택)
-        if (scanAnimator != null) {
-            val pad = dp(10f)
-            val y = scanLineY.coerceIn(guideRectInternal.top, guideRectInternal.bottom)
-            canvas.drawLine(guideRectInternal.left + pad, y, guideRectInternal.right - pad, y, scanLinePaint)
-        }
+        // 2-1) MRZ 가이드 영역 (하단 2줄 강조)
+        drawMrzGuideArea(canvas)
+
+        // 3) 스캔 라인 (글로우 효과 추가)
+        drawScanLine(canvas)
 
         // 4) 상단 데모 애니메이션(선택)
         drawDemoHint(canvas)
+    }
+
+    private fun drawCornerBrackets(canvas: Canvas) {
+        val r = guideRectInternal
+        val len = dp(24f) // 브래킷 길이
+        val radius = cornerRadiusPx
+
+        // Top-Left
+        val tlPath = Path().apply {
+            moveTo(r.left, r.top + len)
+            lineTo(r.left, r.top + radius)
+            quadTo(r.left, r.top, r.left + radius, r.top)
+            lineTo(r.left + len, r.top)
+        }
+        canvas.drawPath(tlPath, boxPaint)
+
+        // Top-Right
+        val trPath = Path().apply {
+            moveTo(r.right - len, r.top)
+            lineTo(r.right - radius, r.top)
+            quadTo(r.right, r.top, r.right, r.top + radius)
+            lineTo(r.right, r.top + len)
+        }
+        canvas.drawPath(trPath, boxPaint)
+
+        // Bottom-Left
+        val blPath = Path().apply {
+            moveTo(r.left, r.bottom - len)
+            lineTo(r.left, r.bottom - radius)
+            quadTo(r.left, r.bottom, r.left + radius, r.bottom)
+            lineTo(r.left + len, r.bottom)
+        }
+        canvas.drawPath(blPath, boxPaint)
+
+        // Bottom-Right
+        val brPath = Path().apply {
+            moveTo(r.right - len, r.bottom)
+            lineTo(r.right - radius, r.bottom)
+            quadTo(r.right, r.bottom, r.right, r.bottom - radius)
+            lineTo(r.right, r.bottom - len)
+        }
+        canvas.drawPath(brPath, boxPaint)
+        
+        // 전체적으로 아주 옅은 가이드 라인 추가 (정돈된 느낌)
+        val originalAlpha = boxPaint.alpha
+        val originalWidth = boxPaint.strokeWidth
+        boxPaint.alpha = 40
+        boxPaint.strokeWidth = dp(1f)
+        canvas.drawRoundRect(r, radius, radius, boxPaint)
+        boxPaint.alpha = originalAlpha
+        boxPaint.strokeWidth = originalWidth
+    }
+
+    private fun drawMrzGuideArea(canvas: Canvas) {
+        // 하단 2줄 영역 (전체 높이의 하단 45%)
+        val mrzTop = guideRectInternal.bottom - (guideRectInternal.height() * 0.45f)
+        val mrzRect = RectF(guideRectInternal.left + dp(2f), mrzTop, guideRectInternal.right - dp(2f), guideRectInternal.bottom - dp(2f))
+        
+        // 옅은 배경 (모서리 둥글게)
+        canvas.drawRoundRect(mrzRect, dp(8f), dp(8f), mrzGuidePaint)
+        
+        // 상단 경계선
+        canvas.drawLine(mrzRect.left + dp(10f), mrzRect.top, mrzRect.right - dp(10f), mrzRect.top, mrzLinePaint)
+        
+        // 중앙 구분선
+        val midY = mrzRect.top + (mrzRect.height() / 2f)
+        canvas.drawLine(mrzRect.left + dp(40f), midY, mrzRect.right - dp(40f), midY, mrzLinePaint)
+    }
+
+    private fun drawScanLine(canvas: Canvas) {
+        if (scanAnimator == null) return
+        
+        val pad = dp(8f)
+        val y = scanLineY.coerceIn(guideRectInternal.top + pad, guideRectInternal.bottom - pad)
+        val left = guideRectInternal.left + pad
+        val right = guideRectInternal.right - pad
+        
+        // 글로우 효과 (그라데이션 느낌의 여러 겹)
+        for (i in 1..4) {
+            scanLineGlowPaint.alpha = (60 / i)
+            val spread = dp(2f * i)
+            canvas.drawRect(left, y - spread, right, y + spread, scanLineGlowPaint)
+        }
+        
+        // 중심 선
+        canvas.drawRect(left, y - dp(1f), right, y + dp(1f), scanLinePaint)
     }
 
     private fun drawDemoHint(canvas: Canvas) {
@@ -278,15 +381,24 @@ class MrzOverlayView @JvmOverloads constructor(
             // 라벨
             canvas.drawText("MRZ", cardRect.left + pad, cardRect.bottom - dp(10f), demoTextPaint)
         } else {
-            // Barcode: 세로 바 느낌
+            // Barcode: 실제 바코드처럼 보이기 위해 선 굵기를 다양하게 구성
             val barTop = innerTop - dp(2f)
             val barBottom = barTop + dp(24f)
             var x = innerLeft
             var i = 0
+            val barWeights = intArrayOf(1, 2, 1, 3, 1, 1, 2, 1, 4, 1, 2, 1, 3, 2, 1, 1, 2, 1)
             while (x < innerRight) {
-                val w = if (i % 3 == 0) dp(3f) else dp(1.5f)
-                canvas.drawLine(x, barTop, x, barBottom, demoStrokePaint)
-                x += w + dp(2f)
+                val weightIndex = i % barWeights.size
+                val weight = barWeights[weightIndex]
+                val w = dp(weight.toFloat() * 1.2f)
+                
+                if (x + w > innerRight) break
+                
+                // 짝수 번째일 때만 그려서 간격 형성
+                if (i % 2 == 0) {
+                    canvas.drawRect(x, barTop, x + w, barBottom, demoStrokePaint)
+                }
+                x += w + dp(1.2f)
                 i++
             }
 

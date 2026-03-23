@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="100dp"
+    android:height="60dp"
+    android:viewportWidth="100"
+    android:viewportHeight="60">
+
+    <!-- Passport Cover (Deep Navy for contrast) -->
+    <path
+        android:pathData="M10,5h80c2,0 4,2 4,4v42c0,2 -2,4 -4,4H10c-2,0 -4,-2 -4,-4V9C6,7 8,5 10,5z"
+        android:fillColor="#102030" />
+
+    <!-- Open Page (White) -->
+    <path
+        android:pathData="M12,10h76v35H12z"
+        android:fillColor="#FFFFFF" />
+
+    <!-- Photo Placeholder -->
+    <path
+        android:pathData="M16,14h20v22H16z"
+        android:fillColor="#F0F0F0" />
+
+    <!-- Text Lines -->
+    <path
+        android:pathData="M42,16h35M42,22h25M42,28h30"
+        android:strokeWidth="1.5"
+        android:strokeColor="#D0D0D0" />
+
+    <!-- MRZ Highlight Area (Bright Yellow for visibility on #00986e) -->
+    <path
+        android:pathData="M12,47h76v10H12z"
+        android:fillColor="#FFEB3B"
+        android:alpha="0.6" />
+
+    <!-- MRZ Text Segments (Manual Dash alternative to fix build error) -->
+    <path
+        android:pathData="M15,51h6M24,51h6M33,51h6M42,51h6M51,51h6M60,51h6M69,51h6M78,51h6M15,54h6M24,54h6M33,54h6"
+        android:strokeWidth="1.5"
+        android:strokeColor="#333333" />
+
+</vector>
